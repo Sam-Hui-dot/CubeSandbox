@@ -1,0 +1,13 @@
+{
+  "service": "checkout-api",
+  "slo": {
+    "latency_p95_ms": 350,
+    "error_rate": 0.03
+  },
+  "correlation_window_minutes": 45,
+  "incident_policy": {
+    "page_when": "p95 latency is above 350 ms or error rate is above 3%",
+    "primary_owner": "checkout-platform",
+    "rollback_hint": "roll back the last checkout-api deployment if deployment correlation is strong"
+  }
+}

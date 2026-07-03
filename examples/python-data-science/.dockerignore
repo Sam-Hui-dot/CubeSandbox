@@ -1,0 +1,9 @@
+.env
+*.env.local
+__pycache__/
+*.py[cod]
+output/
+.scratch/
+.pytest_cache/
+.mypy_cache/
+.DS_Store

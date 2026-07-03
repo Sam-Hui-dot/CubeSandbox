@@ -48,4 +48,5 @@ lang: zh-CN
 
 | 标题 | 作者         | 日期 | 标签 |
 | --- |------------| --- | --- |
+| [Python 生产事故 RCA 代码解释器沙箱](./python-data-science-code-interpreter.md) | Sam | 2026-07-04 | python, data-science, code-interpreter, incident-rca, e2b |
 | [trpc-agent-go：基于 Cube Sandbox 的安全代码执行后端](./trpc-agent-go.md) | joeyczheng | 2026-06-03 | agent, code-execution, e2b, golang |

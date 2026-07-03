@@ -33,6 +33,8 @@ examples/openai-agents-example/.scratch/
 examples/openai-agents-code-interpreter/__pycache__/
 examples/openai-agents-code-interpreter/output/
 examples/openai-agents-code-interpreter/.scratch/
+examples/python-data-science/__pycache__/
+examples/python-data-science/output/
 
 pvm-guest-build/
 pvm-host-build/

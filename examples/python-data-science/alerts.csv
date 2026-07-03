@@ -1,0 +1,5 @@
+timestamp,severity,service,alert,message
+2026-07-03T10:31:00,page,checkout-api,HighErrorRate,5xx error rate above 4% for checkout-api
+2026-07-03T10:34:00,page,checkout-api,HighLatency,p95 latency above 500 ms for checkout-api
+2026-07-03T10:43:00,ticket,checkout-api,SLOBurnRate,30-minute SLO burn rate above incident threshold
+2026-07-03T11:18:00,info,checkout-api,RecoveryWatch,error rate returning below page threshold

@@ -48,4 +48,5 @@ lang: en-US
 
 | Title | Author     | Date | Tags |
 | --- |------------| --- | --- |
+| [Python Incident RCA Code Interpreter Sandbox](./python-data-science-code-interpreter.md) | Sam | 2026-07-04 | python, data-science, code-interpreter, incident-rca, e2b |
 | [trpc-agent-go: A Secure Code Execution Backend Powered by Cube Sandbox](./trpc-agent-go.md) | joeyczheng | 2026-06-03 | agent, code-execution, e2b, golang |
