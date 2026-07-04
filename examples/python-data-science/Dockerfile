@@ -33,6 +33,12 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     matplotlib \
     seaborn \
     scipy \
-    tabulate
+    tabulate && \
+    apt-get purge -y --auto-remove \
+    python3-dev \
+    build-essential \
+    libfreetype6-dev \
+    libpng-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 EXPOSE 49983

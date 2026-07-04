@@ -33,6 +33,8 @@ The runtime `pip3 install emoji humanize` step demonstrates the interactive code
 - `deployments.json`: deployment events used for correlation analysis.
 - `alerts.csv`: alert timeline exported from the monitoring system.
 - `runbook.json`: SLO thresholds and incident policy hints.
+- `round1_detect.py`: first-round anomaly detection program uploaded into the sandbox.
+- `round2_rca.py`: second-round RCA/report packaging program uploaded into the forked sandbox.
 - `test_data_science.py`: end-to-end client that creates a sandbox, uploads files, runs two analysis rounds, downloads the result archive, and validates the manifest.
 - `env.example`: local CubeSandbox API/proxy settings and template ID placeholder.
 
@@ -93,7 +95,7 @@ python3 test_data_science.py
 The script will:
 
 1. Start a sandbox from the registered template.
-2. Upload `incident_metrics.csv`, `deployments.json`, `alerts.csv`, `runbook.json`, and two generated analysis scripts.
+2. Upload `incident_metrics.csv`, `deployments.json`, `alerts.csv`, `runbook.json`, `round1_detect.py`, and `round2_rca.py`.
 3. Install `emoji` and `humanize` dynamically inside the sandbox.
 4. Run round 1 anomaly detection and save intermediate state in the sandbox workspace.
 5. Create a CubeSandbox snapshot checkpoint from the round 1 workspace.

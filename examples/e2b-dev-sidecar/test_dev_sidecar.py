@@ -24,10 +24,15 @@ if str(EXAMPLE_DIR) not in sys.path:
 @pytest.fixture
 def dev_sidecar():
     if "dev_sidecar" in sys.modules:
-        module = importlib.reload(sys.modules["dev_sidecar"])
+        module = sys.modules["dev_sidecar"]
+        if getattr(module, "_PATCHED", False):
+            module.teardown_dev_sidecar()
+        module = importlib.reload(module)
     else:
         module = importlib.import_module("dev_sidecar")
-    return module
+    yield module
+    if getattr(module, "_PATCHED", False):
+        module.teardown_dev_sidecar()
 
 
 @pytest.fixture
@@ -38,7 +43,8 @@ def patched_sidecar(monkeypatch, dev_sidecar):
     monkeypatch.delenv("E2B_DEBUG", raising=False)
     monkeypatch.delenv("E2B_DOMAIN", raising=False)
     dev_sidecar.setup_dev_sidecar()
-    return dev_sidecar
+    yield dev_sidecar
+    dev_sidecar.teardown_dev_sidecar()
 
 
 def _make_sandbox() -> SandboxBase:
@@ -91,6 +97,32 @@ def test_setup_dev_sidecar_is_idempotent(monkeypatch, patched_sidecar):
     assert os.environ.get("CUBE_DEV_PROXY_URL") == "http://127.0.0.1:12580"
     assert os.environ.get("E2B_DEBUG") is None
     assert os.environ.get("E2B_DOMAIN") is None
+
+
+def test_teardown_dev_sidecar_restores_sdk_methods(monkeypatch, patched_sidecar):
+    patched_config_init = ConnectionConfig.__init__
+    patched_get_host = SandboxBase.get_host
+
+    patched_sidecar.teardown_dev_sidecar()
+
+    assert patched_sidecar._PATCHED is False
+    assert ConnectionConfig.__init__ is not patched_config_init
+    assert SandboxBase.get_host is not patched_get_host
+
+    patched_sidecar.setup_dev_sidecar()
+    assert patched_sidecar._PATCHED is True
+
+
+def test_normalize_cube_sandbox_id_rejects_unsafe_path_segments(dev_sidecar):
+    assert (
+        dev_sidecar._normalize_cube_sandbox_id(
+            "0123456789abcdef0123456789abcdef-12345678-1234-1234-1234-123456789abc"
+        )
+        == "0123456789abcdef0123456789abcdef"
+    )
+    assert dev_sidecar._normalize_cube_sandbox_id("sandbox-123") == "sandbox-123"
+    with pytest.raises(ValueError):
+        dev_sidecar._normalize_cube_sandbox_id("../sandbox")
 
 
 def test_connection_config_and_sandbox_helpers_use_routed_urls(patched_sidecar):

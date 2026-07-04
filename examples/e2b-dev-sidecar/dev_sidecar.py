@@ -38,6 +38,9 @@ WEBSOCKET_REQUEST_HEADERS = {
     hdrs.SEC_WEBSOCKET_VERSION,
     hdrs.UPGRADE,
 }
+_CUBE_CLIENT_ID_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+_CUBE_SANDBOX_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+_CUBE_SANDBOX_ID_WITH_CLIENT_RE = re.compile(r"([0-9a-f]{32})-[0-9a-f-]{36}")
 _PATCHED = False
 _ORIGINAL_CONNECTION_CONFIG_INIT = None
 _ORIGINAL_CONNECTION_CONFIG_GET_SANDBOX_URL = None
@@ -412,13 +415,16 @@ def _current_sidecar_url() -> str:
 
 
 def _is_cube_client_id(value: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", value))
+    return bool(_CUBE_CLIENT_ID_RE.fullmatch(value))
 
 
 def _normalize_cube_sandbox_id(sandbox_id: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{32}-[0-9a-f-]{36}", sandbox_id):
-        return sandbox_id.split("-", 1)[0]
-    return sandbox_id
+    match = _CUBE_SANDBOX_ID_WITH_CLIENT_RE.fullmatch(sandbox_id)
+    if match:
+        return match.group(1)
+    if _CUBE_SANDBOX_ID_RE.fullmatch(sandbox_id):
+        return sandbox_id
+    raise ValueError(f"Unexpected Cube sandbox id format: {sandbox_id}")
 
 
 def _build_sandbox_file_url(
@@ -477,31 +483,222 @@ def setup_dev_sidecar() -> None:
 
     base_url = _current_sidecar_url()
 
-    if not _PATCHED:
-        required_attrs = [
-            (SandboxBase, "get_host"),
-            (SandboxBase, "_file_url"),
-        ]
-        if hasattr(ConnectionConfig, "get_sandbox_url"):
-            required_attrs.append((ConnectionConfig, "get_sandbox_url"))
-        if hasattr(SandboxBase, "get_mcp_url"):
-            required_attrs.append((SandboxBase, "get_mcp_url"))
-        for owner, attr in required_attrs:
-            if not hasattr(owner, attr):
-                warnings.warn(
-                    f"{owner.__name__}.{attr} not found; the installed E2B SDK is incompatible "
-                    "with this dev sidecar example.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                return
+    with _SIDECAR_LOCK:
+        if not _PATCHED:
+            required_attrs = [
+                (SandboxBase, "get_host"),
+                (SandboxBase, "_file_url"),
+            ]
+            if hasattr(ConnectionConfig, "get_sandbox_url"):
+                required_attrs.append((ConnectionConfig, "get_sandbox_url"))
+            if hasattr(SandboxBase, "get_mcp_url"):
+                required_attrs.append((SandboxBase, "get_mcp_url"))
+            for owner, attr in required_attrs:
+                if not hasattr(owner, attr):
+                    warnings.warn(
+                        f"{owner.__name__}.{attr} not found; the installed E2B SDK is incompatible "
+                        "with this dev sidecar example.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    return
 
-        _ORIGINAL_CONNECTION_CONFIG_INIT = ConnectionConfig.__init__
-        _ORIGINAL_CONNECTION_CONFIG_GET_SANDBOX_URL = getattr(
-            ConnectionConfig,
-            "get_sandbox_url",
-            None,
-        )
+            _ORIGINAL_CONNECTION_CONFIG_INIT = ConnectionConfig.__init__
+            _ORIGINAL_CONNECTION_CONFIG_GET_SANDBOX_URL = getattr(
+                ConnectionConfig,
+                "get_sandbox_url",
+                None,
+            )
+            try:
+                from e2b.sandbox.sandbox_api import SandboxApiBase
+            except ImportError:
+                try:
+                    from e2b.sandbox_sync.sandbox_api import SandboxApiBase
+                except ImportError:
+                    SandboxApiBase = None
+            try:
+                from e2b.sandbox_sync.sandbox_api import SandboxApi as SyncSandboxApi
+            except ImportError:
+                SyncSandboxApi = None
+            try:
+                from e2b.sandbox_sync.commands.command import Commands
+                from e2b.sandbox_sync.commands.pty import Pty
+                from e2b.sandbox_sync.filesystem.filesystem import Filesystem
+                from e2b.sandbox_sync.main import Sandbox as SyncSandbox
+                from e2b.sandbox_sync.main import TransportWithLogger
+            except ImportError:
+                Commands = None
+                Filesystem = None
+                Pty = None
+                SyncSandbox = None
+                TransportWithLogger = None
+            if SandboxApiBase is not None:
+                _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID = SandboxApiBase._get_sandbox_id
+            if SyncSandboxApi is not None:
+                _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL = SyncSandboxApi._cls_kill
+            _ORIGINAL_SANDBOX_BASE_GET_HOST = SandboxBase.get_host
+            _ORIGINAL_SANDBOX_BASE_FILE_URL = SandboxBase._file_url
+            _ORIGINAL_SANDBOX_BASE_GET_MCP_URL = getattr(SandboxBase, "get_mcp_url", None)
+            if SyncSandbox is not None:
+                _ORIGINAL_SYNC_SANDBOX_INIT = SyncSandbox.__init__
+            try:
+                from e2b_code_interpreter.code_interpreter_sync import Sandbox as CodeInterpreterSandbox
+                from e2b_code_interpreter.constants import JUPYTER_PORT
+            except ImportError:
+                CodeInterpreterSandbox = None
+                JUPYTER_PORT = None
+            try:
+                from e2b_code_interpreter.code_interpreter_async import AsyncSandbox as AsyncCodeInterpreterSandbox
+            except ImportError:
+                AsyncCodeInterpreterSandbox = None
+
+            def __connection_config_get_sandbox_url(self, sandbox_id: str, sandbox_domain: str) -> str:
+                if self._sandbox_url:
+                    return self._sandbox_url
+                return _build_router_url(_current_sidecar_url(), sandbox_id, self.envd_port)
+
+            def __connection_config_init(self, *args, **kwargs) -> None:
+                _ORIGINAL_CONNECTION_CONFIG_INIT(self, *args, **kwargs)
+                api_url = _env("E2B_API_URL")
+                if api_url:
+                    self.api_url = api_url
+
+            def __sandbox_api_base_get_sandbox_id(sandbox_id: str, client_id: str) -> str:
+                normalized_sandbox_id = _normalize_cube_sandbox_id(sandbox_id)
+                if normalized_sandbox_id != sandbox_id:
+                    return normalized_sandbox_id
+                if _is_cube_client_id(client_id):
+                    return sandbox_id
+                return _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID(sandbox_id, client_id)
+
+            def __sync_sandbox_api_cls_kill(cls, sandbox_id: str, *args, **kwargs) -> bool:
+                return _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL(
+                    _normalize_cube_sandbox_id(sandbox_id),
+                    *args,
+                    **kwargs,
+                )
+
+            def __sandbox_base_get_host(self, port: int) -> str:
+                return _build_router_host(
+                    _current_sidecar_url(),
+                    _normalize_cube_sandbox_id(self.sandbox_id),
+                    port,
+                )
+
+            def __sandbox_base_file_url(
+                self,
+                path: str,
+                user: str | None = None,
+                signature: str | None = None,
+                signature_expiration: int | None = None,
+            ) -> str:
+                return _build_sandbox_file_url(
+                    self,
+                    path,
+                    user,
+                    signature,
+                    signature_expiration,
+                )
+
+            def __sandbox_base_get_mcp_url(self) -> str:
+                return _build_router_url(
+                    _current_sidecar_url(),
+                    _normalize_cube_sandbox_id(self.sandbox_id),
+                    self.mcp_port,
+                    "mcp",
+                )
+
+            def __sync_sandbox_init(self, *args, **kwargs) -> None:
+                _ORIGINAL_SYNC_SANDBOX_INIT(self, *args, **kwargs)
+                if (
+                    Commands is None
+                    or Filesystem is None
+                    or Pty is None
+                    or TransportWithLogger is None
+                ):
+                    return
+
+                self._envd_api_url = _build_router_url(
+                    _current_sidecar_url(),
+                    _normalize_cube_sandbox_id(self.sandbox_id),
+                    self.envd_port,
+                )
+                self._transport = TransportWithLogger(limits=self._limits)
+                self._envd_api = httpx.Client(
+                    base_url=self.envd_api_url,
+                    transport=self._transport,
+                )
+                self._filesystem = Filesystem(
+                    self.envd_api_url,
+                    self.connection_config,
+                    self._transport._pool,
+                    self._envd_api,
+                )
+                self._commands = Commands(
+                    self.envd_api_url,
+                    self.connection_config,
+                    self._transport._pool,
+                )
+                self._pty = Pty(
+                    self.envd_api_url,
+                    self.connection_config,
+                    self._transport._pool,
+                )
+
+            def __code_interpreter_jupyter_url(self) -> str:
+                return _build_code_interpreter_url(self, JUPYTER_PORT)
+
+            ConnectionConfig.__init__ = __connection_config_init
+            if SandboxApiBase is not None:
+                SandboxApiBase._get_sandbox_id = staticmethod(__sandbox_api_base_get_sandbox_id)
+            if SyncSandboxApi is not None:
+                SyncSandboxApi._cls_kill = classmethod(__sync_sandbox_api_cls_kill)
+            if hasattr(ConnectionConfig, "get_sandbox_url"):
+                ConnectionConfig.get_sandbox_url = __connection_config_get_sandbox_url
+            SandboxBase.get_host = __sandbox_base_get_host
+            SandboxBase._file_url = __sandbox_base_file_url
+            if hasattr(SandboxBase, "get_mcp_url"):
+                SandboxBase.get_mcp_url = __sandbox_base_get_mcp_url
+            if SyncSandbox is not None:
+                SyncSandbox.__init__ = __sync_sandbox_init
+            if CodeInterpreterSandbox is not None and JUPYTER_PORT is not None:
+                _ORIGINAL_CODE_INTERPRETER_JUPYTER_URL = CodeInterpreterSandbox._jupyter_url
+                CodeInterpreterSandbox._jupyter_url = property(__code_interpreter_jupyter_url)
+            if AsyncCodeInterpreterSandbox is not None and JUPYTER_PORT is not None:
+                _ORIGINAL_ASYNC_CODE_INTERPRETER_JUPYTER_URL = AsyncCodeInterpreterSandbox._jupyter_url
+                AsyncCodeInterpreterSandbox._jupyter_url = property(__code_interpreter_jupyter_url)
+            _PATCHED = True
+
+    os.environ["CUBE_DEV_PROXY_URL"] = base_url
+
+
+def teardown_dev_sidecar() -> None:
+    """Restore SDK monkey patches applied by setup_dev_sidecar().
+
+    The embedded sidecar server, if started, is daemon-thread based and is not
+    stopped here. This helper only restores SDK module/class state so tests can
+    run isolated fixtures in one Python process.
+    """
+    from e2b import ConnectionConfig
+    try:
+        from e2b.sandbox.main import SandboxBase
+    except ImportError:
+        from e2b.sandbox.main import SandboxSetup as SandboxBase
+
+    global _PATCHED
+
+    with _SIDECAR_LOCK:
+        if not _PATCHED:
+            return
+
+        if _ORIGINAL_CONNECTION_CONFIG_INIT is not None:
+            ConnectionConfig.__init__ = _ORIGINAL_CONNECTION_CONFIG_INIT
+        if (
+            _ORIGINAL_CONNECTION_CONFIG_GET_SANDBOX_URL is not None
+            and hasattr(ConnectionConfig, "get_sandbox_url")
+        ):
+            ConnectionConfig.get_sandbox_url = _ORIGINAL_CONNECTION_CONFIG_GET_SANDBOX_URL
+
         try:
             from e2b.sandbox.sandbox_api import SandboxApiBase
         except ImportError:
@@ -509,160 +706,48 @@ def setup_dev_sidecar() -> None:
                 from e2b.sandbox_sync.sandbox_api import SandboxApiBase
             except ImportError:
                 SandboxApiBase = None
+        if SandboxApiBase is not None and _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID is not None:
+            SandboxApiBase._get_sandbox_id = _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID
+
         try:
             from e2b.sandbox_sync.sandbox_api import SandboxApi as SyncSandboxApi
         except ImportError:
             SyncSandboxApi = None
+        if SyncSandboxApi is not None and _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL is not None:
+            SyncSandboxApi._cls_kill = _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL
+
+        if _ORIGINAL_SANDBOX_BASE_GET_HOST is not None:
+            SandboxBase.get_host = _ORIGINAL_SANDBOX_BASE_GET_HOST
+        if _ORIGINAL_SANDBOX_BASE_FILE_URL is not None:
+            SandboxBase._file_url = _ORIGINAL_SANDBOX_BASE_FILE_URL
+        if _ORIGINAL_SANDBOX_BASE_GET_MCP_URL is not None and hasattr(SandboxBase, "get_mcp_url"):
+            SandboxBase.get_mcp_url = _ORIGINAL_SANDBOX_BASE_GET_MCP_URL
+
         try:
-            from e2b.sandbox_sync.commands.command import Commands
-            from e2b.sandbox_sync.commands.pty import Pty
-            from e2b.sandbox_sync.filesystem.filesystem import Filesystem
             from e2b.sandbox_sync.main import Sandbox as SyncSandbox
-            from e2b.sandbox_sync.main import TransportWithLogger
         except ImportError:
-            Commands = None
-            Filesystem = None
-            Pty = None
             SyncSandbox = None
-            TransportWithLogger = None
-        if SandboxApiBase is not None:
-            _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID = SandboxApiBase._get_sandbox_id
-        if SyncSandboxApi is not None:
-            _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL = SyncSandboxApi._cls_kill
-        _ORIGINAL_SANDBOX_BASE_GET_HOST = SandboxBase.get_host
-        _ORIGINAL_SANDBOX_BASE_FILE_URL = SandboxBase._file_url
-        _ORIGINAL_SANDBOX_BASE_GET_MCP_URL = getattr(SandboxBase, "get_mcp_url", None)
-        if SyncSandbox is not None:
-            _ORIGINAL_SYNC_SANDBOX_INIT = SyncSandbox.__init__
+        if SyncSandbox is not None and _ORIGINAL_SYNC_SANDBOX_INIT is not None:
+            SyncSandbox.__init__ = _ORIGINAL_SYNC_SANDBOX_INIT
+
         try:
             from e2b_code_interpreter.code_interpreter_sync import Sandbox as CodeInterpreterSandbox
-            from e2b_code_interpreter.constants import JUPYTER_PORT
         except ImportError:
             CodeInterpreterSandbox = None
-            JUPYTER_PORT = None
+        if CodeInterpreterSandbox is not None and _ORIGINAL_CODE_INTERPRETER_JUPYTER_URL is not None:
+            CodeInterpreterSandbox._jupyter_url = _ORIGINAL_CODE_INTERPRETER_JUPYTER_URL
+
         try:
             from e2b_code_interpreter.code_interpreter_async import AsyncSandbox as AsyncCodeInterpreterSandbox
         except ImportError:
             AsyncCodeInterpreterSandbox = None
+        if (
+            AsyncCodeInterpreterSandbox is not None
+            and _ORIGINAL_ASYNC_CODE_INTERPRETER_JUPYTER_URL is not None
+        ):
+            AsyncCodeInterpreterSandbox._jupyter_url = _ORIGINAL_ASYNC_CODE_INTERPRETER_JUPYTER_URL
 
-        def __connection_config_get_sandbox_url(self, sandbox_id: str, sandbox_domain: str) -> str:
-            if self._sandbox_url:
-                return self._sandbox_url
-            return _build_router_url(_current_sidecar_url(), sandbox_id, self.envd_port)
-
-        def __connection_config_init(self, *args, **kwargs) -> None:
-            _ORIGINAL_CONNECTION_CONFIG_INIT(self, *args, **kwargs)
-            api_url = _env("E2B_API_URL")
-            if api_url:
-                self.api_url = api_url
-
-        def __sandbox_api_base_get_sandbox_id(sandbox_id: str, client_id: str) -> str:
-            normalized_sandbox_id = _normalize_cube_sandbox_id(sandbox_id)
-            if normalized_sandbox_id != sandbox_id:
-                return normalized_sandbox_id
-            if _is_cube_client_id(client_id):
-                return sandbox_id
-            return _ORIGINAL_SANDBOX_API_BASE_GET_SANDBOX_ID(sandbox_id, client_id)
-
-        def __sync_sandbox_api_cls_kill(cls, sandbox_id: str, *args, **kwargs) -> bool:
-            return _ORIGINAL_SYNC_SANDBOX_API_CLS_KILL(
-                _normalize_cube_sandbox_id(sandbox_id),
-                *args,
-                **kwargs,
-            )
-
-        def __sandbox_base_get_host(self, port: int) -> str:
-            return _build_router_host(
-                _current_sidecar_url(),
-                _normalize_cube_sandbox_id(self.sandbox_id),
-                port,
-            )
-
-        def __sandbox_base_file_url(
-            self,
-            path: str,
-            user: str | None = None,
-            signature: str | None = None,
-            signature_expiration: int | None = None,
-        ) -> str:
-            return _build_sandbox_file_url(
-                self,
-                path,
-                user,
-                signature,
-                signature_expiration,
-            )
-
-        def __sandbox_base_get_mcp_url(self) -> str:
-            return _build_router_url(
-                _current_sidecar_url(),
-                _normalize_cube_sandbox_id(self.sandbox_id),
-                self.mcp_port,
-                "mcp",
-            )
-
-        def __sync_sandbox_init(self, *args, **kwargs) -> None:
-            _ORIGINAL_SYNC_SANDBOX_INIT(self, *args, **kwargs)
-            if (
-                Commands is None
-                or Filesystem is None
-                or Pty is None
-                or TransportWithLogger is None
-            ):
-                return
-
-            self._envd_api_url = _build_router_url(
-                _current_sidecar_url(),
-                _normalize_cube_sandbox_id(self.sandbox_id),
-                self.envd_port,
-            )
-            self._transport = TransportWithLogger(limits=self._limits)
-            self._envd_api = httpx.Client(
-                base_url=self.envd_api_url,
-                transport=self._transport,
-            )
-            self._filesystem = Filesystem(
-                self.envd_api_url,
-                self.connection_config,
-                self._transport._pool,
-                self._envd_api,
-            )
-            self._commands = Commands(
-                self.envd_api_url,
-                self.connection_config,
-                self._transport._pool,
-            )
-            self._pty = Pty(
-                self.envd_api_url,
-                self.connection_config,
-                self._transport._pool,
-            )
-
-        def __code_interpreter_jupyter_url(self) -> str:
-            return _build_code_interpreter_url(self, JUPYTER_PORT)
-
-        ConnectionConfig.__init__ = __connection_config_init
-        if SandboxApiBase is not None:
-            SandboxApiBase._get_sandbox_id = staticmethod(__sandbox_api_base_get_sandbox_id)
-        if SyncSandboxApi is not None:
-            SyncSandboxApi._cls_kill = classmethod(__sync_sandbox_api_cls_kill)
-        if hasattr(ConnectionConfig, "get_sandbox_url"):
-            ConnectionConfig.get_sandbox_url = __connection_config_get_sandbox_url
-        SandboxBase.get_host = __sandbox_base_get_host
-        SandboxBase._file_url = __sandbox_base_file_url
-        if hasattr(SandboxBase, "get_mcp_url"):
-            SandboxBase.get_mcp_url = __sandbox_base_get_mcp_url
-        if SyncSandbox is not None:
-            SyncSandbox.__init__ = __sync_sandbox_init
-        if CodeInterpreterSandbox is not None and JUPYTER_PORT is not None:
-            _ORIGINAL_CODE_INTERPRETER_JUPYTER_URL = CodeInterpreterSandbox._jupyter_url
-            CodeInterpreterSandbox._jupyter_url = property(__code_interpreter_jupyter_url)
-        if AsyncCodeInterpreterSandbox is not None and JUPYTER_PORT is not None:
-            _ORIGINAL_ASYNC_CODE_INTERPRETER_JUPYTER_URL = AsyncCodeInterpreterSandbox._jupyter_url
-            AsyncCodeInterpreterSandbox._jupyter_url = property(__code_interpreter_jupyter_url)
-        _PATCHED = True
-
-    os.environ["CUBE_DEV_PROXY_URL"] = base_url
+        _PATCHED = False
 
 
 def main() -> None:
