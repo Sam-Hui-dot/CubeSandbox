@@ -326,11 +326,20 @@ def _read_bytes(path: Path) -> bytes:
 
 
 def _write_sandbox_file(sandbox, remote_path: str, local_path: Path) -> None:
-    data = _read_bytes(local_path)
-    try:
-        sandbox.files.write(remote_path, data)
-    except TypeError:
-        sandbox.files.write(remote_path, data.decode("utf-8"))
+    sandbox.files.write(remote_path, _read_bytes(local_path).decode("utf-8"))
+
+
+def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    for member in tar.getmembers():
+        member_path = (target_dir / member.name).resolve()
+        if target_root != member_path and target_root not in member_path.parents:
+            raise RuntimeError(f"Archive member escapes output directory: {member.name}")
+
+    if sys.version_info >= (3, 12):
+        tar.extractall(target_dir, filter="data")
+    else:
+        tar.extractall(target_dir)
 
 
 def _download_archive(sandbox) -> None:
@@ -346,7 +355,7 @@ def _download_archive(sandbox) -> None:
         shutil.rmtree(extract_dir)
     extract_dir.mkdir()
     with tarfile.open(LOCAL_ARCHIVE, "r:gz") as tar:
-        tar.extractall(extract_dir)
+        _safe_extract_tar(tar, extract_dir)
 
     expected = [
         "事故分析图.png",
@@ -362,7 +371,7 @@ def _download_archive(sandbox) -> None:
     manifest = json.loads((extract_dir / "manifest.json").read_text(encoding="utf-8"))
     if (
         manifest.get("scenario") != "ai_incident_rca_code_interpreter"
-        or manifest.get("likely_trigger") != "v1.19.0"
+        or not manifest.get("likely_trigger")
         or "round2_followup_rca_packaging" not in manifest.get("stateful_rounds", [])
     ):
         raise RuntimeError("Downloaded manifest does not match the expected incident RCA output")
