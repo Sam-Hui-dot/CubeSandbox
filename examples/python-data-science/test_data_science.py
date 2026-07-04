@@ -26,6 +26,7 @@ REMOTE_WORKDIR = "/tmp/cubesandbox-incident-rca"
 REMOTE_ARCHIVE = "/tmp/cubesandbox-incident-rca-results.tar.gz"
 LOCAL_OUTPUT_DIR = EXAMPLE_DIR / "output"
 LOCAL_ARCHIVE = LOCAL_OUTPUT_DIR / "cubesandbox-incident-rca-results.tar.gz"
+SNAPSHOT_NAME = "incident-rca-round1-checkpoint"
 
 
 ROUND1_SCRIPT = r'''
@@ -282,6 +283,7 @@ manifest = {
     ],
     "stateful_rounds": [
         "round1_anomaly_detection",
+        "snapshot_checkpoint_fork",
         "round2_followup_rca_packaging",
     ],
     "first_breach": first_breach.isoformat(),
@@ -296,6 +298,11 @@ manifest = {
         "manifest.json",
     ],
 }
+checkpoint_marker = os.path.join(state_dir, "checkpoint_snapshot_id.txt")
+if os.path.exists(checkpoint_marker):
+    with open(checkpoint_marker, "r", encoding="utf-8") as f:
+        manifest["checkpoint_snapshot_id"] = f.read().strip()
+
 with open(manifest_path, "w", encoding="utf-8") as f:
     json.dump(manifest, f, ensure_ascii=False, indent=2)
 
@@ -305,6 +312,8 @@ with tarfile.open(archive_path, "w:gz") as tar:
         tar.add(os.path.join(output_dir, name), arcname=name)
     tar.add(os.path.join(state_dir, "anomaly_windows.csv"), arcname="state/anomaly_windows.csv")
     tar.add(os.path.join(state_dir, "baseline.json"), arcname="state/baseline.json")
+    if os.path.exists(checkpoint_marker):
+        tar.add(checkpoint_marker, arcname="state/checkpoint_snapshot_id.txt")
 
 print("Round 2 completed: RCA report and packaged artifacts generated")
 print("Likely trigger:", deployment_correlation["likely_trigger"])
@@ -327,6 +336,46 @@ def _read_bytes(path: Path) -> bytes:
 
 def _write_sandbox_file(sandbox, remote_path: str, local_path: Path) -> None:
     sandbox.files.write(remote_path, _read_bytes(local_path).decode("utf-8"))
+
+
+def _cube_api_headers() -> dict[str, str]:
+    headers = {"content-type": "application/json"}
+    api_key = os.environ.get("E2B_API_KEY", "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
+
+
+def _cube_sandbox_id(sandbox_id: str) -> str:
+    """Return the CubeAPI sandbox id from the SDK's optional client-suffixed id."""
+    return sandbox_id.split("-", 1)[0]
+
+
+def _create_checkpoint_snapshot(api_url: str, sandbox_id: str) -> str:
+    sandbox_id = _cube_sandbox_id(sandbox_id)
+    response = httpx.post(
+        f"{api_url.rstrip('/')}/sandboxes/{sandbox_id}/snapshots",
+        headers=_cube_api_headers(),
+        json={"name": SNAPSHOT_NAME},
+        timeout=240,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    snapshot_id = payload.get("snapshotID") or payload.get("snapshot_id")
+    if not snapshot_id:
+        raise RuntimeError(f"Snapshot response did not include snapshotID: {payload}")
+    return snapshot_id
+
+
+def _delete_checkpoint_snapshot(api_url: str, snapshot_id: str) -> None:
+    response = httpx.delete(
+        f"{api_url.rstrip('/')}/templates/{snapshot_id}",
+        headers=_cube_api_headers(),
+        timeout=240,
+    )
+    if response.status_code == 404:
+        return
+    response.raise_for_status()
 
 
 def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
@@ -372,6 +421,8 @@ def _download_archive(sandbox) -> None:
     if (
         manifest.get("scenario") != "ai_incident_rca_code_interpreter"
         or not manifest.get("likely_trigger")
+        or not manifest.get("checkpoint_snapshot_id")
+        or "snapshot_checkpoint_fork" not in manifest.get("stateful_rounds", [])
         or "round2_followup_rca_packaging" not in manifest.get("stateful_rounds", [])
     ):
         raise RuntimeError("Downloaded manifest does not match the expected incident RCA output")
@@ -393,6 +444,7 @@ def main() -> None:
     print(f"Connecting to Cube Sandbox API at: {api_url}")
     print(f"Booting incident RCA code interpreter sandbox from template: {template_id}")
 
+    snapshot_id = ""
     with Sandbox(template=template_id) as sandbox:
         print(f"[Success] Sandbox {sandbox.sandbox_id} is running")
 
@@ -419,18 +471,55 @@ def main() -> None:
             raise RuntimeError(f"Round 1 failed with exit code {round1.exit_code}")
         print(round1.stdout)
 
-        print("\n--- Step 4: Round 2 follow-up RCA reuses state and packages artifacts ---")
-        round2 = sandbox.commands.run(f"python3 {REMOTE_WORKDIR}/round2_rca.py")
-        if round2.exit_code != 0:
-            print(round2.stdout)
-            print(round2.stderr)
-            raise RuntimeError(f"Round 2 failed with exit code {round2.exit_code}")
-        print(round2.stdout)
+        print("\n--- Step 4: Snapshot the round 1 workspace as a reusable checkpoint ---")
+        snapshot_id = _create_checkpoint_snapshot(api_url, sandbox.sandbox_id)
+        print(f"[Success] Snapshot checkpoint created: {snapshot_id}")
 
-        print("\n--- Step 5: Download and extract packaged RCA results ---")
-        _download_archive(sandbox)
-        print(f"[Success] Archive downloaded to: {LOCAL_ARCHIVE}")
-        print(f"[Success] Extracted files to: {LOCAL_OUTPUT_DIR / 'results'}")
+    try:
+        print("\n--- Step 5: Fork a fresh sandbox from the checkpoint snapshot ---")
+        with Sandbox(template=snapshot_id) as forked_sandbox:
+            print(f"[Success] Forked sandbox {forked_sandbox.sandbox_id} from checkpoint")
+            marker = forked_sandbox.commands.run(
+                f"printf '%s\\n' {snapshot_id!r} > {REMOTE_WORKDIR}/state/checkpoint_snapshot_id.txt"
+            )
+            if marker.exit_code != 0:
+                print(marker.stdout)
+                print(marker.stderr)
+                raise RuntimeError("Failed to write checkpoint marker in forked sandbox")
+
+            state_check = forked_sandbox.commands.run(
+                f"test -s {REMOTE_WORKDIR}/state/baseline.json "
+                f"&& test -s {REMOTE_WORKDIR}/state/anomaly_windows.csv"
+            )
+            if state_check.exit_code != 0:
+                print(state_check.stdout)
+                print(state_check.stderr)
+                raise RuntimeError("Forked sandbox did not inherit round 1 analysis state")
+            print("[Success] Forked sandbox inherited the round 1 analysis state")
+
+            print("\n--- Step 6: Round 2 follow-up RCA reuses forked state and packages artifacts ---")
+            round2 = forked_sandbox.commands.run(f"python3 {REMOTE_WORKDIR}/round2_rca.py")
+            if round2.exit_code != 0:
+                print(round2.stdout)
+                print(round2.stderr)
+                raise RuntimeError(f"Round 2 failed with exit code {round2.exit_code}")
+            print(round2.stdout)
+
+            print("\n--- Step 7: Download and extract packaged RCA results ---")
+            _download_archive(forked_sandbox)
+            print(f"[Success] Archive downloaded to: {LOCAL_ARCHIVE}")
+            print(f"[Success] Extracted files to: {LOCAL_OUTPUT_DIR / 'results'}")
+    finally:
+        if snapshot_id:
+            print("\n--- Cleanup: Delete checkpoint snapshot ---")
+            has_active_error = sys.exc_info()[0] is not None
+            try:
+                _delete_checkpoint_snapshot(api_url, snapshot_id)
+                print(f"[Success] Snapshot deleted: {snapshot_id}")
+            except Exception as cleanup_error:
+                print(f"[WARN] Failed to delete snapshot {snapshot_id}: {cleanup_error}")
+                if not has_active_error:
+                    raise
 
     print("\n[Finished] Incident RCA code interpreter flow completed successfully")
 
