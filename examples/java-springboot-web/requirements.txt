@@ -1,0 +1,4 @@
+aiohttp
+e2b==1.0.1
+httpx
+python-dotenv

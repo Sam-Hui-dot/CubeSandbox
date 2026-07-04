@@ -48,4 +48,5 @@ lang: zh-CN
 
 | 标题 | 作者         | 日期 | 标签 |
 | --- |------------| --- | --- |
+| [基于快照预热 Maven 缓存的 Java Spring Boot 开发测试沙箱](./java-springboot-web-service.md) | Sam | 2026-07-05 | java, spring-boot, backend, maven, snapshot |
 | [trpc-agent-go：基于 Cube Sandbox 的安全代码执行后端](./trpc-agent-go.md) | joeyczheng | 2026-06-03 | agent, code-execution, e2b, golang |

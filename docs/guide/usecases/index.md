@@ -48,4 +48,5 @@ lang: en-US
 
 | Title | Author     | Date | Tags |
 | --- |------------| --- | --- |
+| [Java Spring Boot Dev/Test Sandbox With Snapshot-Warmed Maven Cache](./java-springboot-web-service.md) | Sam | 2026-07-05 | java, spring-boot, backend, maven, snapshot |
 | [trpc-agent-go: A Secure Code Execution Backend Powered by Cube Sandbox](./trpc-agent-go.md) | joeyczheng | 2026-06-03 | agent, code-execution, e2b, golang |
