@@ -47,4 +47,5 @@ lang: zh-CN
 
 | 标题 | 作者 | 日期 | 标签 |
 | --- | --- | --- | --- |
+| [OpenCode 集成指南](./opencode.md) | Sam-Hui-dot | 2026-07-05 | integration, opencode, coding-agent, agent |
 | [Pi Agent 集成指南](./pi-agent.md) | chaojixinren | 2026-07-01 | integration, pi-agent, coding-agent, agent |

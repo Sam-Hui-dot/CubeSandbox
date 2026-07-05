@@ -47,4 +47,5 @@ lang: en-US
 
 | Title | Author | Date | Tags |
 | --- | --- | --- | --- |
+| [OpenCode Integration Guide](./opencode.md) | Sam-Hui-dot | 2026-07-05 | integration, opencode, coding-agent, agent |
 | [Pi Agent Integration Guide](./pi-agent.md) | chaojixinren | 2026-07-01 | integration, pi-agent, coding-agent, agent |
