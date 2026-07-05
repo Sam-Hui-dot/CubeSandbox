@@ -74,8 +74,11 @@ Required values:
 | `OPENCODE_MODEL` | OpenCode model in `provider/model` form |
 | `<PROVIDER>_API_KEY` | API key matching the provider prefix |
 
-Use `OPENCODE_BASE_URL` for OpenAI-compatible custom endpoints. The scripts
-write an `opencode.json` into the sandbox workspace when this is set.
+Use `OPENCODE_BASE_URL` for OpenAI-compatible custom endpoints. If it is not
+set, the scripts also accept provider-specific variables such as
+`OPENAI_BASE_URL`. The scripts write an `opencode.json` into the sandbox
+workspace with `provider.<provider_prefix>.options.baseURL` when either value
+is set.
 
 When running against this repository's `dev-env/` VM, also set:
 
@@ -98,8 +101,8 @@ CUBE_PROXY_PORT_HTTP=11080
 ## 4. Run the one-shot coding task
 
 ```bash
-python run_opencode.py --dry-run
-python run_opencode.py
+python3 run_opencode.py --dry-run
+python3 run_opencode.py
 ```
 
 The demo seeds `/workspace` with a tiny Python project, asks OpenCode to
@@ -109,7 +112,7 @@ that `result.md` contains `OPENCODE_CUBE_OK`.
 ## 5. Verify pause/resume persistence
 
 ```bash
-python resume_opencode.py
+python3 resume_opencode.py
 ```
 
 The first turn asks OpenCode to write `plan.md`, pauses the sandbox, reconnects
@@ -119,7 +122,7 @@ continues the task and checks for `OPENCODE_RESUME_OK`.
 ## 6. Run with restricted egress
 
 ```bash
-python network_policy.py
+python3 network_policy.py
 ```
 
 This path uses the native `cubesandbox` SDK to create the sandbox with
@@ -130,13 +133,13 @@ only a placeholder environment value.
 Set `OPENCODE_LLM_HOST` when using a custom endpoint:
 
 ```bash
-OPENCODE_LLM_HOST=api.openai.com python network_policy.py
+OPENCODE_LLM_HOST=api.openai.com python3 network_policy.py
 ```
 
 For quick policy checks without spending LLM tokens:
 
 ```bash
-python network_policy.py --skip-agent
+python3 network_policy.py --skip-agent
 ```
 
 ## Validation
@@ -165,12 +168,14 @@ docker run --rm opencode-cube:verify python3 --version
 | OpenCode cannot authenticate | Wrong provider key name | Match the prefix: `openai/*` needs `OPENAI_API_KEY` |
 | Template probe fails | The envd port is not reachable | Use `--probe 49983 --probe-path /health` with the CubeSandbox base entrypoint |
 | `403 Forbidden - CubeEgress` | Strict egress blocked a host | Set `OPENCODE_LLM_HOST` to the real provider host |
+| Supply-chain hardening required | The example Dockerfile uses the NodeSource setup script for readability | Pin and verify Node.js packages or mirror the artifacts in production pipelines |
 
 ## Security notes
 
 - The Docker image never contains provider secrets.
 - `run_opencode.py` and `resume_opencode.py` inject the provider key only for
-  the command. This is convenient for local validation but leaves egress open.
+  the command and redact known secret values from failure output. This is
+  convenient for local validation but leaves egress open.
 - `network_policy.py` is the recommended shared-cluster pattern: default-deny
   egress plus CubeEgress header injection.
 - Do not commit `.env`.

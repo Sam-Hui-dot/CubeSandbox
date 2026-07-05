@@ -103,8 +103,10 @@ OPENCODE_MODEL=openai/gpt-4.1-mini
 OPENAI_API_KEY=<provider-key>
 ```
 
-For custom endpoints, set `OPENCODE_BASE_URL`; the scripts write an
-`opencode.json` in the sandbox workspace with `provider.<id>.options.baseURL`.
+For custom endpoints, set `OPENCODE_BASE_URL`. If it is not set, the scripts
+also accept provider-specific variables such as `OPENAI_BASE_URL`. The scripts
+write an `opencode.json` in the sandbox workspace with
+`provider.<provider_prefix>.options.baseURL`.
 
 When validating against the repository's `dev-env/` VM, set
 `CUBE_DEV_SIDECAR=1` so the host-side SDK routes sandbox traffic through
@@ -122,8 +124,8 @@ CUBE_PROXY_PORT_HTTP=11080
 ### 4. Run the one-shot coding task
 
 ```bash
-python run_opencode.py --dry-run
-python run_opencode.py
+python3 run_opencode.py --dry-run
+python3 run_opencode.py
 ```
 
 The script seeds a small Python project, runs OpenCode, then verifies:
@@ -135,7 +137,7 @@ The script seeds a small Python project, runs OpenCode, then verifies:
 ### 5. Demonstrate session persistence
 
 ```bash
-python resume_opencode.py
+python3 resume_opencode.py
 ```
 
 The first turn writes `plan.md`, pauses the sandbox, reconnects to the same
@@ -145,7 +147,7 @@ continues the task and checks `OPENCODE_RESUME_OK`.
 ### 6. Restrict egress and inject credentials
 
 ```bash
-python network_policy.py
+python3 network_policy.py
 ```
 
 The strict path uses the native `cubesandbox` SDK:
@@ -155,7 +157,11 @@ The strict path uses the native `cubesandbox` SDK:
 - `Inject` attaches the real provider credential as an HTTP header.
 - The sandbox process receives only a placeholder key.
 
-Use `--skip-agent` to verify policy behavior without spending LLM tokens.
+Use `--skip-agent` to verify policy behavior without spending LLM tokens:
+
+```bash
+python3 network_policy.py --skip-agent
+```
 
 ## Key Code Snippets
 
@@ -193,10 +199,14 @@ Rule(
 - OpenCode still needs a real LLM provider key for live runs.
 - `--auto` lets OpenCode perform edits and commands without interactive approval;
   use it only inside the isolated sandbox boundary.
-- Direct env injection in `run_opencode.py` is convenient for local validation,
-  but shared clusters should prefer `network_policy.py`.
+- Direct env injection in `run_opencode.py` is convenient for local validation
+  and known secret values are redacted from failure output, but shared clusters
+  should prefer `network_policy.py`.
 - Custom provider support depends on OpenCode's provider configuration and the
   target endpoint's compatibility with the selected model.
+- The example Dockerfile uses the NodeSource setup script for readability.
+  Production images should pin and verify Node.js package sources or mirror the
+  artifacts internally.
 
 ## Validation
 
@@ -213,10 +223,10 @@ docker run --rm opencode-cube:verify opencode --version
 Live CubeSandbox validation:
 
 ```bash
-python run_opencode.py
-python resume_opencode.py
-python network_policy.py --skip-agent
-python network_policy.py
+python3 run_opencode.py
+python3 resume_opencode.py
+python3 network_policy.py --skip-agent
+python3 network_policy.py
 ```
 
 ## References

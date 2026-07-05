@@ -73,8 +73,9 @@ pip install -r requirements.txt
 | `OPENCODE_MODEL` | `provider/model` 形式的 OpenCode 模型 |
 | `<PROVIDER>_API_KEY` | 与 provider 前缀匹配的 API key |
 
-如需使用 OpenAI-compatible 自定义端点，设置 `OPENCODE_BASE_URL`。脚本会在沙箱
-工作目录写入 `opencode.json`。
+如需使用 OpenAI-compatible 自定义端点，设置 `OPENCODE_BASE_URL`。如果未设置，
+脚本也接受 provider-specific 变量，例如 `OPENAI_BASE_URL`。脚本会在沙箱
+工作目录写入 `opencode.json`，配置 `provider.<provider_prefix>.options.baseURL`。
 
 如果连接的是本仓库的 `dev-env/` VM，还需要设置：
 
@@ -95,8 +96,8 @@ CUBE_PROXY_PORT_HTTP=11080
 ## 4. 运行一次性编码任务
 
 ```bash
-python run_opencode.py --dry-run
-python run_opencode.py
+python3 run_opencode.py --dry-run
+python3 run_opencode.py
 ```
 
 脚本会在 `/workspace` 放入一个小型 Python 项目，让 OpenCode 实现
@@ -106,7 +107,7 @@ python run_opencode.py
 ## 5. 验证 pause/resume 会话保持
 
 ```bash
-python resume_opencode.py
+python3 resume_opencode.py
 ```
 
 第一轮让 OpenCode 写入 `plan.md`，随后暂停沙箱；脚本再连接同一个 sandbox ID，
@@ -116,7 +117,7 @@ python resume_opencode.py
 ## 6. 受限出网模式
 
 ```bash
-python network_policy.py
+python3 network_policy.py
 ```
 
 该路径使用原生 `cubesandbox` SDK 创建沙箱：默认拒绝出网，只允许配置的 LLM host。
@@ -125,13 +126,13 @@ python network_policy.py
 自定义端点请设置：
 
 ```bash
-OPENCODE_LLM_HOST=api.openai.com python network_policy.py
+OPENCODE_LLM_HOST=api.openai.com python3 network_policy.py
 ```
 
 只检查策略、不实际调用 LLM：
 
 ```bash
-python network_policy.py --skip-agent
+python3 network_policy.py --skip-agent
 ```
 
 ## 验证
@@ -160,10 +161,11 @@ docker run --rm opencode-cube:verify python3 --version
 | OpenCode 鉴权失败 | provider key 名称不匹配 | `openai/*` 对应 `OPENAI_API_KEY` |
 | 模板 probe 失败 | envd 端口不可达 | 使用 CubeSandbox base entrypoint 时配置 `--probe 49983 --probe-path /health` |
 | `403 Forbidden - CubeEgress` | 严格出网模式阻断了目标 host | 设置真实的 `OPENCODE_LLM_HOST` |
+| 需要生产级供应链加固 | 示例 Dockerfile 为了可读性使用 NodeSource setup script | 生产镜像建议 pin 并校验 Node.js 包来源，或使用内部镜像源 |
 
 ## 安全说明
 
 - Docker 镜像不包含任何 provider secret。
-- `run_opencode.py` 和 `resume_opencode.py` 只在单次命令环境中注入 key，适合本地验证。
+- `run_opencode.py` 和 `resume_opencode.py` 只在单次命令环境中注入 key，并会在失败输出中脱敏已知 secret，适合本地验证。
 - `network_policy.py` 是共享集群推荐路径：默认拒绝出网 + CubeEgress header 注入。
 - 不要提交 `.env`。

@@ -100,8 +100,9 @@ OPENCODE_MODEL=openai/gpt-4.1-mini
 OPENAI_API_KEY=<provider-key>
 ```
 
-自定义端点可设置 `OPENCODE_BASE_URL`；脚本会在沙箱工作目录写入
-`opencode.json`，配置 `provider.<id>.options.baseURL`。
+自定义端点可设置 `OPENCODE_BASE_URL`；如果未设置，脚本也接受 provider-specific
+变量，例如 `OPENAI_BASE_URL`。脚本会在沙箱工作目录写入 `opencode.json`，
+配置 `provider.<provider_prefix>.options.baseURL`。
 
 如果使用本仓库的 `dev-env/` VM 验证，设置 `CUBE_DEV_SIDECAR=1`，让宿主端 SDK
 通过 `examples/e2b-dev-sidecar` 转发 sandbox 流量。
@@ -117,8 +118,8 @@ CUBE_PROXY_PORT_HTTP=11080
 ### 4. 运行一次性编码任务
 
 ```bash
-python run_opencode.py --dry-run
-python run_opencode.py
+python3 run_opencode.py --dry-run
+python3 run_opencode.py
 ```
 
 脚本会放入一个小型 Python 项目，运行 OpenCode，并验证：
@@ -130,7 +131,7 @@ python run_opencode.py
 ### 5. 演示会话保持
 
 ```bash
-python resume_opencode.py
+python3 resume_opencode.py
 ```
 
 第一轮写入 `plan.md`，暂停沙箱，再连接同一个 sandbox；脚本验证 `/workspace`
@@ -139,7 +140,7 @@ python resume_opencode.py
 ### 6. 限制出网并注入凭证
 
 ```bash
-python network_policy.py
+python3 network_policy.py
 ```
 
 严格模式使用原生 `cubesandbox` SDK：
@@ -149,7 +150,11 @@ python network_policy.py
 - `Inject` 在 HTTP header 中注入真实 provider 凭证。
 - 沙箱进程只能看到占位 key。
 
-可用 `--skip-agent` 只验证策略，不消耗 LLM token。
+可用 `--skip-agent` 只验证策略，不消耗 LLM token：
+
+```bash
+python3 network_policy.py --skip-agent
+```
 
 ## 关键代码片段
 
@@ -186,9 +191,11 @@ Rule(
 
 - live 运行仍需要真实 LLM provider key。
 - `--auto` 会让 OpenCode 无需交互确认即可编辑和执行命令，应放在隔离沙箱内使用。
-- `run_opencode.py` 的直接 env 注入适合本地验证；共享集群建议使用
-  `network_policy.py`。
+- `run_opencode.py` 的直接 env 注入适合本地验证，并会在失败输出中脱敏已知
+  secret；共享集群建议使用 `network_policy.py`。
 - 自定义 provider 取决于 OpenCode provider 配置以及目标端点对所选模型的兼容性。
+- 示例 Dockerfile 为了可读性使用 NodeSource setup script；生产镜像建议 pin
+  并校验 Node.js 包来源，或使用内部镜像源。
 
 ## 验证
 
@@ -205,10 +212,10 @@ docker run --rm opencode-cube:verify opencode --version
 live CubeSandbox 验证：
 
 ```bash
-python run_opencode.py
-python resume_opencode.py
-python network_policy.py --skip-agent
-python network_policy.py
+python3 run_opencode.py
+python3 resume_opencode.py
+python3 network_policy.py --skip-agent
+python3 network_policy.py
 ```
 
 ## 参考

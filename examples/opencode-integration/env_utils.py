@@ -60,7 +60,8 @@ def required(name: str) -> str:
 
 
 def optional(name: str, default: str = "") -> str:
-    return os.environ.get(name) or default
+    value = os.environ.get(name)
+    return default if value is None else value
 
 
 def int_env(name: str, default: int) -> int:
