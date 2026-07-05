@@ -3,58 +3,110 @@ package com.example.cubesandbox;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class TaskState {
-    private static final Path STATE_DIR = Path.of("/tmp/cubesandbox-spring/state");
-    private static final Path STATE_FILE = STATE_DIR.resolve("tasks.json");
+    private static final int MAX_STORED_TASKS = 100;
+    private static final Duration TASK_TTL = Duration.ofHours(12);
+    private static final String STATE_FILE_NAME = "tasks.json";
     private static final TypeReference<Map<String, Map<String, Object>>> TASKS_TYPE =
             new TypeReference<>() {};
 
     private final ObjectMapper objectMapper;
+    private final Path stateDir;
+    private final Path stateFile;
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
-    public TaskState(ObjectMapper objectMapper) {
+    public TaskState(
+            ObjectMapper objectMapper,
+            @Value("${cubesandbox.task-state-dir:/tmp/cubesandbox-spring/state}") String stateDir) {
+        this(objectMapper, Path.of(stateDir));
+    }
+
+    TaskState(ObjectMapper objectMapper, Path stateDir) {
         this.objectMapper = objectMapper;
+        this.stateDir = stateDir;
+        this.stateFile = stateDir.resolve(STATE_FILE_NAME);
     }
 
-    public synchronized Map<String, Object> createTask(Map<String, Object> request) {
-        Map<String, Map<String, Object>> tasks = readTasks();
-        String id = UUID.randomUUID().toString();
-        Map<String, Object> task = new LinkedHashMap<>();
-        task.put("id", id);
-        task.put("title", String.valueOf(request.getOrDefault("title", "demo task")));
-        task.put("status", "created");
-        task.put("createdAt", Instant.now().toString());
-        task.put("payload", request.getOrDefault("payload", Map.of()));
-        task.put("stateFile", STATE_FILE.toString());
-        tasks.put(id, task);
-        writeTasks(tasks);
-        return task;
-    }
-
-    public synchronized Map<String, Object> getTask(String id) {
-        Map<String, Object> task = readTasks().get(id);
-        if (task == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found: " + id);
+    public Map<String, Object> createTask(Map<String, Object> request) {
+        lock.writeLock().lock();
+        try {
+            Map<String, Map<String, Object>> tasks = readTasks();
+            Instant now = Instant.now();
+            pruneTasks(tasks, now);
+            String id = UUID.randomUUID().toString();
+            Map<String, Object> task = new LinkedHashMap<>();
+            task.put("id", id);
+            task.put("title", String.valueOf(request.getOrDefault("title", "demo task")));
+            task.put("status", "created");
+            task.put("createdAt", now.toString());
+            task.put("payload", request.getOrDefault("payload", Map.of()));
+            task.put("stateFile", stateFile.toString());
+            tasks.put(id, task);
+            writeTasks(tasks);
+            return task;
+        } finally {
+            lock.writeLock().unlock();
         }
-        return task;
+    }
+
+    public Map<String, Object> getTask(String id) {
+        lock.readLock().lock();
+        try {
+            Map<String, Object> task = readTasks().get(id);
+            if (task == null || isExpired(task, Instant.now())) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found: " + id);
+            }
+            return task;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    private void pruneTasks(Map<String, Map<String, Object>> tasks, Instant now) {
+        tasks.entrySet().removeIf(entry -> isExpired(entry.getValue(), now));
+        Iterator<String> ids = tasks.keySet().iterator();
+        while (tasks.size() >= MAX_STORED_TASKS && ids.hasNext()) {
+            ids.next();
+            ids.remove();
+        }
+    }
+
+    private boolean isExpired(Map<String, Object> task, Instant now) {
+        Object createdAt = task.get("createdAt");
+        if (!(createdAt instanceof String createdAtText)) {
+            return true;
+        }
+        try {
+            return Instant.parse(createdAtText).plus(TASK_TTL).isBefore(now);
+        } catch (DateTimeParseException e) {
+            return true;
+        }
     }
 
     private Map<String, Map<String, Object>> readTasks() {
-        if (!Files.exists(STATE_FILE)) {
+        if (!Files.exists(stateFile)) {
             return new LinkedHashMap<>();
         }
         try {
-            return objectMapper.readValue(STATE_FILE.toFile(), TASKS_TYPE);
+            return objectMapper.readValue(stateFile.toFile(), TASKS_TYPE);
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to read task state", e);
         }
@@ -62,10 +114,18 @@ public class TaskState {
 
     private void writeTasks(Map<String, Map<String, Object>> tasks) {
         try {
-            Files.createDirectories(STATE_DIR);
-            Path tempFile = Files.createTempFile(STATE_DIR, "tasks", ".json.tmp");
+            Files.createDirectories(stateDir);
+            Path tempFile = Files.createTempFile(stateDir, "tasks", ".json.tmp");
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), tasks);
-            Files.move(tempFile, STATE_FILE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(
+                        tempFile,
+                        stateFile,
+                        StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tempFile, stateFile, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to write task state", e);
         }

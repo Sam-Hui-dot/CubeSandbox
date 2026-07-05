@@ -32,7 +32,9 @@ ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
 ENV JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75"
 
 RUN mkdir -p /workspace/java-springboot-web /workspace/.m2/repository && \
-    chmod -R 0777 /workspace
+    chown -R user:user /workspace && \
+    find /workspace -type d -exec chmod 0755 {} \; && \
+    find /workspace -type f -exec chmod 0644 {} \;
 
 WORKDIR /workspace/java-springboot-web
 
@@ -40,6 +42,14 @@ COPY pom.xml ./
 RUN mvn -B -DskipTests dependency:go-offline
 
 COPY src ./src
-RUN chown -R user:user /workspace && chmod -R 0777 /workspace
+RUN mvn -B -DskipTests package && rm -rf target
+
+RUN chown -R user:user /workspace && \
+    touch /var/log/envd.log && \
+    chown user:user /var/log/envd.log && \
+    find /workspace -type d -exec chmod 0755 {} \; && \
+    find /workspace -type f -exec chmod 0644 {} \;
+
+USER user:user
 
 EXPOSE 49983 8080
