@@ -42,14 +42,21 @@ PASSTHROUGH_ENV_NAMES = (
 def load_local_dotenv() -> None:
     candidate_paths = [Path(__file__).with_name(".env"), Path.cwd() / ".env"]
     seen_paths: set[Path] = set()
+    checked_paths: list[str] = []
     for path in candidate_paths:
         resolved = path.resolve()
         if resolved in seen_paths:
             continue
         seen_paths.add(resolved)
+        checked_paths.append(str(path))
         if path.is_file():
             load_dotenv(dotenv_path=path, override=False)
             return
+    print(
+        "Warning: no .env file found; continuing with existing environment. "
+        f"Checked: {', '.join(checked_paths)}",
+        file=sys.stderr,
+    )
 
 
 def required(name: str) -> str:

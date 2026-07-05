@@ -150,6 +150,13 @@ python3 network_policy.py
 - `Inject` 在 HTTP header 中注入真实 provider 凭证。
 - 沙箱进程只能看到占位 key。
 
+当 LLM API host 与 provider 默认值不一致时（尤其使用 `OPENCODE_BASE_URL`
+或 provider-specific `<PROVIDER>_BASE_URL` 时），请设置 `OPENCODE_LLM_HOST`：
+
+```bash
+OPENCODE_LLM_HOST=api.openai.com python3 network_policy.py
+```
+
 可用 `--skip-agent` 只验证策略，不消耗 LLM token：
 
 ```bash

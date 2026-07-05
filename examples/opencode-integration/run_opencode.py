@@ -9,7 +9,12 @@ import os
 import shlex
 import sys
 
-from _opencode_common import ensure_success, run_command, sandbox_identifier
+from _opencode_common import (
+    ensure_success,
+    run_command,
+    sandbox_identifier,
+    warn_direct_secret_env,
+)
 from env_utils import (
     build_opencode_env,
     int_env,
@@ -19,6 +24,7 @@ from env_utils import (
     opencode_model,
     opencode_provider,
     opencode_workspace,
+    provider_key_name,
     require_provider_key,
     required,
     setup_dev_sidecar_if_requested,
@@ -57,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-alive", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--raw", action="store_true", help="Reserved for symmetry.")
     args = parser.parse_args()
     if args.prompt is None:
@@ -129,6 +136,7 @@ def main() -> int:
     model = opencode_model()
     provider = opencode_provider(model)
     require_provider_key(provider)
+    key_name = provider_key_name(provider)
 
     command = opencode_command(
         args.prompt,
@@ -148,6 +156,7 @@ def main() -> int:
         return 0
 
     setup_dev_sidecar_if_requested()
+    warn_direct_secret_env(key_name)
     from e2b import Sandbox
 
     print(f"Creating sandbox from template: {template_id}")
@@ -158,9 +167,10 @@ def main() -> int:
         sandbox_id = sandbox_identifier(sandbox)
         print(f"Sandbox ready: {sandbox_id}")
 
-        version_result = run_command(sandbox, "opencode --version", timeout=60)
-        ensure_success(version_result, "check OpenCode version")
-        print(f"OpenCode version: {getattr(version_result, 'stdout', '').strip()}")
+        if args.verbose:
+            version_result = run_command(sandbox, "opencode --version", timeout=60)
+            ensure_success(version_result, "check OpenCode version")
+            print(f"OpenCode version: {getattr(version_result, 'stdout', '').strip()}")
 
         seed_project(sandbox, args.workspace, timeout=60)
         print(f"Seeded deterministic project in {args.workspace}")

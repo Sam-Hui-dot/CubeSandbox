@@ -157,6 +157,14 @@ The strict path uses the native `cubesandbox` SDK:
 - `Inject` attaches the real provider credential as an HTTP header.
 - The sandbox process receives only a placeholder key.
 
+Set `OPENCODE_LLM_HOST` when the LLM API host differs from the provider
+default, especially when using `OPENCODE_BASE_URL` or a provider-specific
+`<PROVIDER>_BASE_URL`:
+
+```bash
+OPENCODE_LLM_HOST=api.openai.com python3 network_policy.py
+```
+
 Use `--skip-agent` to verify policy behavior without spending LLM tokens:
 
 ```bash

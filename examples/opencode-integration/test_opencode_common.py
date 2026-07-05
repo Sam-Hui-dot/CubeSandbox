@@ -7,12 +7,13 @@ import os
 import sys
 import unittest
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _opencode_common import ensure_success, redact_secrets, run_command
+from _opencode_common import ensure_success, redact_secrets, run_command, stream_writer
 
 
 @dataclass
@@ -51,6 +52,31 @@ class CommonHelperTest(unittest.TestCase):
             self.assertEqual(
                 redact_secrets("provider key is sk-secret-value"),
                 "provider key is <redacted>",
+            )
+
+    def test_stream_writer_redacts_known_env_values(self) -> None:
+        stream = StringIO()
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-stream-secret"}, clear=True):
+            stream_writer(stream)("stdout sk-stream-secret\n")
+        self.assertEqual(stream.getvalue(), "stdout <redacted>\n")
+
+    def test_redact_secrets_replaces_longest_values_first(self) -> None:
+        env = {
+            "A_API_KEY": "sk-foo",
+            "B_API_KEY": "sk-foobar",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(redact_secrets("value sk-foobar"), "value <redacted>")
+
+    def test_redact_secrets_uses_secret_name_suffixes(self) -> None:
+        env = {
+            "CSRF_TOKEN_EXPIRY_SECONDS": "3600",
+            "SESSION_TOKEN": "secret-token",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                redact_secrets("ttl 3600 token secret-token"),
+                "ttl 3600 token <redacted>",
             )
 
     def test_ensure_success_redacts_stdout_and_stderr(self) -> None:

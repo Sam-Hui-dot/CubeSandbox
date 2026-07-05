@@ -13,7 +13,12 @@ import sys
 
 from e2b import Sandbox
 
-from _opencode_common import ensure_success, run_command, sandbox_identifier
+from _opencode_common import (
+    ensure_success,
+    run_command,
+    sandbox_identifier,
+    warn_direct_secret_env,
+)
 from env_utils import (
     build_opencode_env,
     int_env,
@@ -23,6 +28,7 @@ from env_utils import (
     opencode_model,
     opencode_provider,
     opencode_workspace,
+    provider_key_name,
     require_provider_key,
     required,
     setup_dev_sidecar_if_requested,
@@ -162,9 +168,11 @@ def main() -> int:
     model = opencode_model()
     provider = opencode_provider(model)
     require_provider_key(provider)
+    key_name = provider_key_name(provider)
     envs = build_opencode_env(include_secrets=True)
 
     setup_dev_sidecar_if_requested()
+    warn_direct_secret_env(key_name)
 
     sandbox = None
     sandbox_id = "unknown"

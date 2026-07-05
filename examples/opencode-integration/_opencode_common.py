@@ -13,13 +13,14 @@ from functools import lru_cache
 from typing import Any
 
 
-SECRET_ENV_MARKERS = ("API_KEY", "TOKEN", "SECRET")
+SECRET_ENV_SUFFIXES = ("API_KEY", "_KEY", "_TOKEN", "_SECRET")
+SECRET_ENV_NAMES = {"KEY", "TOKEN", "SECRET", "API_KEY"}
 
 
 def stream_writer(stream) -> Callable[[object], None]:
     def write(chunk: object) -> None:
         text = getattr(chunk, "line", chunk)
-        stream.write(str(text))
+        stream.write(redact_secrets(str(text)))
         stream.flush()
 
     return write
@@ -61,6 +62,17 @@ def sandbox_identifier(sandbox: Any) -> str:
     return getattr(sandbox, "sandbox_id", getattr(sandbox, "id", "unknown"))
 
 
+def warn_direct_secret_env(key_name: str) -> None:
+    if _secret_is_present(os.environ.get(key_name)):
+        print(
+            f"Warning: {key_name} will be passed into the sandbox process "
+            "environment for this local convenience demo. Use network_policy.py "
+            "for shared clusters so CubeEgress can inject credentials without "
+            "exposing the real key inside the sandbox.",
+            file=sys.stderr,
+        )
+
+
 @lru_cache(maxsize=None)
 def _command_env_kwarg(commands_type: type) -> str:
     params = _command_run_parameters(commands_type)
@@ -91,7 +103,8 @@ def _filter_supported_kwargs(commands_type: type, kwargs: dict[str, Any]) -> dic
 
 
 def _is_secret_env(name: str) -> bool:
-    return any(marker in name.upper() for marker in SECRET_ENV_MARKERS)
+    normalized = name.upper()
+    return normalized in SECRET_ENV_NAMES or normalized.endswith(SECRET_ENV_SUFFIXES)
 
 
 def _secret_is_present(value: str | None) -> bool:
@@ -100,7 +113,11 @@ def _secret_is_present(value: str | None) -> bool:
 
 def redact_secrets(text: str) -> str:
     redacted = text
-    for name, value in os.environ.items():
-        if _is_secret_env(name) and _secret_is_present(value):
-            redacted = redacted.replace(value, "<redacted>")
+    values = {
+        value
+        for name, value in os.environ.items()
+        if _is_secret_env(name) and _secret_is_present(value)
+    }
+    for value in sorted(values, key=len, reverse=True):
+        redacted = redacted.replace(value, "<redacted>")
     return redacted
