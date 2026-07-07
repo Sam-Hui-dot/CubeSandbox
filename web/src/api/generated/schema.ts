@@ -133,6 +133,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sandboxes/{sandboxID}/terminal/tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_terminal_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sandboxes/{sandboxID}/terminal/ws": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["terminal_websocket"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/templates": {
         parameters: {
             query?: never;
@@ -305,6 +337,7 @@ export interface components {
         ListedSandbox: {
             alias?: string | null;
             clientID: string;
+            containers?: components["schemas"]["SandboxContainer"][] | null;
             /** Format: int32 */
             cpuCount: number;
             /** Format: int32 */
@@ -413,10 +446,21 @@ export interface components {
             templateID: string;
             trafficAccessToken?: string | null;
         };
+        /** @description Runtime container visible inside a sandbox. */
+        SandboxContainer: {
+            containerID: string;
+            image?: string | null;
+            kind?: string | null;
+            name?: string | null;
+            /** Format: date-time */
+            startedAt?: string | null;
+            state: components["schemas"]["SandboxState"];
+        };
         /** @description Detailed sandbox info returned by GET /sandboxes/{sandboxID}. */
         SandboxDetail: {
             alias?: string | null;
             clientID: string;
+            containers?: components["schemas"]["SandboxContainer"][] | null;
             /** Format: int32 */
             cpuCount: number;
             /** Format: int32 */
@@ -491,9 +535,9 @@ export interface components {
             /** @description Whether public internet access is allowed for sandboxes from this template. */
             allowInternetAccess?: boolean | null;
             createRequest?: unknown;
+            instanceType?: string | null;
             /** @description Latest create/rebuild job id for the template. */
             jobID?: string | null;
-            instanceType?: string | null;
             lastError?: string | null;
             /** @description Network type used when the template was created, e.g. "tap". */
             networkType?: string | null;
@@ -518,12 +562,30 @@ export interface components {
             createdAt?: string | null;
             imageInfo?: string | null;
             instanceType?: string | null;
+            /** @description Latest create/rebuild job id for the template. */
+            jobID?: string | null;
             lastError?: string | null;
             status: string;
             templateID: string;
             version?: string | null;
-            /** @description Latest create/rebuild job id for the template. */
-            jobID?: string | null;
+        };
+        TerminalTicketRequest: {
+            /** Format: int32 */
+            cols?: number | null;
+            containerID?: string | null;
+            cwd?: string | null;
+            envs?: {
+                [key: string]: string;
+            } | null;
+            /** Format: int32 */
+            rows?: number | null;
+            user?: string | null;
+        };
+        TerminalTicketResponse: {
+            containerID?: string | null;
+            expiresAt: string;
+            ticket: string;
+            websocketUrl: string;
         };
         /** @description Full node x component version matrix. */
         VersionMatrixView: {
@@ -879,6 +941,111 @@ export interface operations {
             };
             /** @description Unexpected backend error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    create_terminal_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sandbox identifier */
+                sandboxID: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TerminalTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Short-lived terminal WebSocket ticket */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminalTicketResponse"];
+                };
+            };
+            /** @description Invalid terminal request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sandbox or container not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sandbox or container is not loggable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unexpected backend error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    terminal_websocket: {
+        parameters: {
+            query: {
+                /** @description Short-lived one-time terminal ticket */
+                ticket: string;
+            };
+            header?: never;
+            path: {
+                /** @description Sandbox identifier */
+                sandboxID: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Terminal WebSocket upgrade */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

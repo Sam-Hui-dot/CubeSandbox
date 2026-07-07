@@ -14,8 +14,8 @@ use crate::{
     models::{
         ApiError, ClusterOverview, ComponentMatrixRowView, ComponentVersionGroupView,
         ComponentVersionView, ControlPlaneVersionView, NodeComponentEntryView, NodeConditionView,
-        NodeResourcesView, NodeVersionRowView, NodeView, ResumedSandbox, Sandbox, SandboxDetail,
-        SandboxLogEntry, SandboxLogsV2Response, SandboxState, SandboxVolumeMount,
+        NodeResourcesView, NodeVersionRowView, NodeView, ResumedSandbox, Sandbox, SandboxContainer,
+        SandboxDetail, SandboxLogEntry, SandboxLogsV2Response, SandboxState, SandboxVolumeMount,
         TemplateCompatAdoptResponseView, TemplateCompatMatrixView, TemplateCompatRowView,
         TemplateCompatSummaryView, TemplateDetail, TemplateNodeCompatView, TemplateSummary,
         VersionMatrixView,
@@ -65,7 +65,9 @@ impl Modify for SecurityAddon {
         handlers::sandboxes::kill_sandbox,
         handlers::sandboxes::pause_sandbox,
         handlers::sandboxes::resume_sandbox,
-        handlers::sandboxes::get_sandbox_logs_v2
+        handlers::sandboxes::get_sandbox_logs_v2,
+        handlers::terminal::create_terminal_ticket,
+        handlers::terminal::terminal_websocket
     ),
     components(schemas(
         ApiError,
@@ -90,10 +92,13 @@ impl Modify for SecurityAddon {
         TemplateCompatAdoptResponseView,
         SandboxState,
         SandboxVolumeMount,
+        SandboxContainer,
         crate::models::ListedSandbox,
         SandboxDetail,
         Sandbox,
         ResumedSandbox,
+        handlers::terminal::TerminalTicketRequest,
+        handlers::terminal::TerminalTicketResponse,
         SandboxLogEntry,
         SandboxLogsV2Response
     )),

@@ -17,8 +17,9 @@ use crate::{
     },
     error::{AppError, AppResult},
     models::{
-        EgressRule, LogLevel as ModelLogLevel, NewSandbox, Sandbox, SandboxDetail, SandboxLog,
-        SandboxLogEntry, SandboxLogs, SandboxLogsV2Response, SandboxNetworkConfig, SandboxState,
+        EgressRule, LogLevel as ModelLogLevel, NewSandbox, Sandbox, SandboxContainer,
+        SandboxDetail, SandboxLog, SandboxLogEntry, SandboxLogs, SandboxLogsV2Response,
+        SandboxNetworkConfig, SandboxState,
     },
 };
 
@@ -140,6 +141,19 @@ impl SandboxService {
             metadata: optional_metadata(d.labels),
             state: sandbox_state_from_status(d.status),
             volume_mounts: None,
+            containers: Some(
+                d.containers
+                    .into_iter()
+                    .map(|container| SandboxContainer {
+                        container_id: container.container_id,
+                        name: optional_nonempty(container.name),
+                        state: sandbox_state_from_status(container.status),
+                        image: optional_nonempty(container.image),
+                        kind: optional_nonempty(container.kind),
+                        started_at: container.started_at,
+                    })
+                    .collect(),
+            ),
         })
     }
 
@@ -722,6 +736,7 @@ pub(crate) fn from_cubemaster_info(s: SandboxInfo) -> crate::models::ListedSandb
         state: sandbox_state_from_str(&s.status),
         envd_version,
         volume_mounts: None,
+        containers: None,
     }
 }
 
@@ -780,6 +795,15 @@ fn optional_metadata(metadata: HashMap<String, String>) -> Option<HashMap<String
         None
     } else {
         Some(metadata)
+    }
+}
+
+fn optional_nonempty(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
     }
 }
 

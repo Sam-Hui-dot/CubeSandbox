@@ -19,7 +19,25 @@ export type ComponentVersionDto = components['schemas']['ComponentVersionView'];
 
 export interface RunningSandbox extends ListedSandboxDto {}
 
+export type SandboxContainer = NonNullable<NonNullable<SandboxDetailDto['containers']>[number]>;
+
 export interface SandboxDetail extends SandboxDetailDto {}
+
+export interface TerminalTicketRequest {
+  containerID?: string;
+  rows?: number;
+  cols?: number;
+  cwd?: string;
+  envs?: Record<string, string>;
+  user?: string;
+}
+
+export interface TerminalTicketResponse {
+  ticket: string;
+  expiresAt: string;
+  websocketUrl: string;
+  containerID?: string;
+}
 
 export interface TemplateSummary {
   templateID: string;
@@ -203,6 +221,11 @@ export const sandboxApi = {
     api<void>(`/sandboxes/${id}/timeout`, { method: 'POST', body: JSON.stringify({ timeout: seconds }) }),
   logs: (id: string, params?: { cursor?: number; limit?: number; direction?: string }) =>
     api<SandboxLogsDto>(`/v2/sandboxes/${id}/logs`, { params }),
+  createTerminalTicket: (id: string, body: TerminalTicketRequest) =>
+    api<TerminalTicketResponse>(`/sandboxes/${id}/terminal/tickets`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   create: (body: {
     templateID: string;
     metadata?: Record<string, string>;

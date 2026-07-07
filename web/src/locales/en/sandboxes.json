@@ -23,6 +23,7 @@
   "alias": "alias: {{alias}}",
   "vcpu": "{{count}} vCPU",
   "actions": {
+    "terminal": "Terminal",
     "resume": "Resume",
     "pause": "Pause",
     "kill": "Kill"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Tencent. All rights reserved.
 
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Pause, Play, Trash2, Search, Plus } from 'lucide-react';
+import { Pause, Play, Trash2, Search, Plus, Terminal } from 'lucide-react';
 import { formatBytes, formatRelative, short } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { formatSandboxActionError } from '@/lib/sandboxActionError';
@@ -19,9 +19,17 @@ import { SandboxActionErrorBanner } from '@/components/SandboxActionErrorBanner'
 
 type StateFilter = 'all' | 'running' | 'paused';
 
+const SandboxTerminalDialog = lazy(() =>
+  import('@/components/SandboxTerminalDialog').then((mod) => ({
+    default: mod.SandboxTerminalDialog,
+  })),
+);
+
 export default function SandboxesPage() {
   const [q, setQ] = useState('');
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [terminalSandboxId, setTerminalSandboxId] = useState<string | null>(null);
+  const [terminalRestoreKey, setTerminalRestoreKey] = useState(0);
   const qc = useQueryClient();
   const { t } = useTranslation('sandboxes');
 
@@ -162,6 +170,10 @@ export default function SandboxesPage() {
             onKill={() => killMut.mutate(sb.sandboxID)}
             onPause={() => pauseMut.mutate(sb.sandboxID)}
             onResume={() => resumeMut.mutate(sb.sandboxID)}
+            onOpenTerminal={() => {
+              setTerminalSandboxId(sb.sandboxID);
+              setTerminalRestoreKey((value) => value + 1);
+            }}
             busy={pendingId === sb.sandboxID}
           />
         ))}
@@ -169,6 +181,19 @@ export default function SandboxesPage() {
           <div className="py-16 text-center text-sm text-muted-foreground">{t('noMatch')}</div>
         )}
       </Card>
+
+      {terminalSandboxId ? (
+        <Suspense fallback={null}>
+          <SandboxTerminalDialog
+            sandboxId={terminalSandboxId}
+            open={terminalSandboxId !== null}
+            restoreKey={terminalRestoreKey}
+            onOpenChange={(open) => {
+              if (!open) setTerminalSandboxId(null);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 }
@@ -178,12 +203,14 @@ function Row({
   onKill,
   onPause,
   onResume,
+  onOpenTerminal,
   busy,
 }: {
   sb: RunningSandbox;
   onKill: () => void;
   onPause: () => void;
   onResume: () => void;
+  onOpenTerminal: () => void;
   busy: boolean;
 }) {
   const { t } = useTranslation('sandboxes');
@@ -213,6 +240,15 @@ function Row({
       <div className="text-xs text-muted-foreground/80 text-num">{sb.clientID || '—'}</div>
       <div className="text-xs text-muted-foreground">{formatRelative(sb.startedAt)}</div>
       <div className="flex justify-end gap-1">
+        <Button
+          size="icon"
+          variant="ghost"
+          title={t('actions.terminal')}
+          onClick={onOpenTerminal}
+          disabled={busy || state !== 'running'}
+        >
+          <Terminal size={14} />
+        </Button>
         {state === 'paused' ? (
           <Button size="icon" variant="ghost" title={t('actions.resume')} onClick={onResume} disabled={busy}>
             <Play size={14} />

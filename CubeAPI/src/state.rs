@@ -6,6 +6,7 @@ use crate::cubemaster::CubeMasterClient;
 use crate::db::AgentHubStore;
 use crate::logging::ArcLogger;
 use crate::services::AppServices;
+use crate::terminal::{TerminalSessionStore, TerminalTicketStore};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -32,6 +33,12 @@ pub struct AppState {
 
     /// Optional database-backed AgentHub instance store.
     pub agenthub_store: Option<AgentHubStore>,
+
+    /// Short-lived Web Terminal tickets consumed by WebSocket upgrades.
+    pub terminal_tickets: TerminalTicketStore,
+
+    /// Active Web Terminal sessions and lifecycle policy.
+    pub terminal_sessions: TerminalSessionStore,
 }
 
 impl AppState {
@@ -73,6 +80,8 @@ impl AppState {
             logger,
             config: Arc::new(config),
             agenthub_store,
+            terminal_tickets: TerminalTicketStore::default(),
+            terminal_sessions: TerminalSessionStore::from_env(),
         }
     }
 }

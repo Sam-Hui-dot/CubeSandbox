@@ -27,6 +27,42 @@
     "pause": "暂停",
     "kill": "终止"
   },
+  "terminal": {
+    "title": "终端 {{id}}",
+    "description": "沙箱交互式终端。",
+    "connecting": "正在连接沙箱终端...",
+    "started": "终端已连接 (pid {{pid}})。",
+    "exited": "终端已退出，退出码 {{code}}。",
+    "exitedWithError": "终端已退出: {{message}}",
+    "idleTimeout": "终端因 {{seconds}} 秒无操作已关闭。",
+    "session": "会话 {{id}}",
+    "scrollback": "回滚 {{lines}} 行",
+    "container": {
+      "select": "选择终端容器",
+      "current": "容器 {{id}}"
+    },
+    "status": {
+      "idle": "空闲",
+      "connecting": "连接中",
+      "connected": "已连接",
+      "closed": "已关闭",
+      "error": "错误"
+    },
+    "actions": {
+      "open": "终端",
+      "maximize": "最大化",
+      "restore": "还原",
+      "fit": "适配终端尺寸",
+      "reconnect": "重连",
+      "close": "关闭"
+    },
+    "errors": {
+      "websocket": "终端连接失败。",
+      "openFailed": "打开终端失败: {{message}}",
+      "invalidMessage": "终端收到了无效的服务端消息。",
+      "noRunningContainer": "没有可登录的运行中容器。"
+    }
+  },
   "errors": {
     "unknown": "未知错误",
     "actionFailed": "操作失败: {{message}}",

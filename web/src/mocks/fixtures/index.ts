@@ -34,6 +34,24 @@ function buildSandboxes(): ListedSandboxDto[] {
       state: 'running',
       envdVersion: '0.1.7',
       volumeMounts: [{ name: 'workspace', path: '/workspace' }],
+      containers: [
+        {
+          containerID: 'ctr-python-main',
+          name: 'main',
+          state: 'running',
+          image: 'registry.cube.dev/templates/python-3.11-ai:2024.11.02',
+          kind: 'sandbox',
+          startedAt: ago(137),
+        },
+        {
+          containerID: 'ctr-python-sidecar',
+          name: 'debug-sidecar',
+          state: 'running',
+          image: 'registry.cube.dev/sidecars/debug:latest',
+          kind: 'sidecar',
+          startedAt: ago(131),
+        },
+      ],
     },
     {
       templateID: 'nodejs-20-web',
@@ -48,6 +66,16 @@ function buildSandboxes(): ListedSandboxDto[] {
       metadata: { branch: 'feat/dashboard-ui' },
       state: 'running',
       envdVersion: '0.1.7',
+      containers: [
+        {
+          containerID: 'ctr-web-main',
+          name: 'main',
+          state: 'running',
+          image: 'registry.cube.dev/templates/nodejs-20-web:20.18.0',
+          kind: 'sandbox',
+          startedAt: ago(32),
+        },
+      ],
     },
     {
       templateID: 'ubuntu-24.04',
@@ -62,6 +90,16 @@ function buildSandboxes(): ListedSandboxDto[] {
       metadata: { paused_reason: 'manual' },
       state: 'paused',
       envdVersion: '0.1.6',
+      containers: [
+        {
+          containerID: 'ctr-paused-main',
+          name: 'main',
+          state: 'paused',
+          image: 'registry.cube.dev/templates/ubuntu-24.04:latest',
+          kind: 'sandbox',
+          startedAt: ago(6200),
+        },
+      ],
     },
     {
       templateID: 'go-1.22',

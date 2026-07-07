@@ -23,6 +23,7 @@
   "alias": "别名: {{alias}}",
   "vcpu": "{{count}} vCPU",
   "actions": {
+    "terminal": "终端",
     "resume": "恢复",
     "pause": "暂停",
     "kill": "终止"

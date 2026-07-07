@@ -67,7 +67,70 @@ If any number is red, click into **Nodes** to see which host is unhappy.
 
 To stop a sandbox, go to **Sandboxes**, find the row, and click the pause / kill button on the right.
 
-### 3.3 Configure the API key (only if auth is enabled)
+### 3.3 Open an interactive terminal
+
+On the **Sandboxes** list, or on a running sandbox detail page, click
+**Terminal** to open an in-browser shell. Non-running sandboxes keep the action
+disabled because CubeAPI only opens terminals for instances that are currently
+`running`.
+
+The Dashboard asks CubeAPI for a short-lived, one-time terminal ticket, then
+upgrades to a WebSocket that bridges browser input/output to envd's PTY process
+API inside the sandbox.
+
+The terminal supports:
+
+- ANSI output, cursor control, copy/paste, and scrollback through xterm.js
+- stdin forwarding over WebSocket text frames with UTF-8-safe base64 payloads
+- terminal window resize propagation to envd PTY size updates
+- running-container selection when sandbox detail exposes multiple containers
+- reconnect and fit controls in the terminal toolbar
+- session IDs, close reasons, duration, and operator fields in audit logs
+- automatic process cleanup when the browser disconnects or the session idles
+
+::: tip Terminal access is ticket-based
+Browsers cannot attach arbitrary `Authorization` headers to a WebSocket upgrade.
+CubeAPI therefore authenticates the normal `POST /sandboxes/:id/terminal/tickets`
+request first, issues a one-time ticket with a short TTL, and validates that
+ticket during the WebSocket upgrade.
+:::
+
+For local or custom deployments, CubeAPI must be able to reach CubeProxy/envd.
+Set `CUBE_API_SANDBOX_PROXY_URL` to the HTTP base URL that accepts sandbox
+virtual-host requests. For backward compatibility, CubeAPI also falls back to
+`AGENTHUB_SANDBOX_PROXY_URL` when the new variable is not set.
+
+```bash
+export CUBE_API_SANDBOX_PROXY_URL=http://127.0.0.1
+```
+
+The default idle timeout is 30 minutes. Override it with either of these
+variables:
+
+```bash
+export CUBE_API_TERMINAL_IDLE_TIMEOUT_SECS=1800
+# Compatibility alias:
+export TERMINAL_IDLE_TIMEOUT_SECS=1800
+```
+
+Terminal audit events are emitted as structured logs:
+
+| Event | Important fields |
+| --- | --- |
+| `terminal.ticket.issued` | `sandbox_id`, `container_id`, requested `rows`, requested `cols` |
+| `terminal.open_failed` | `sandbox_id`, `container_id`, `created_by`, `stage`, `error` |
+| `terminal.opened` | `sandbox_id`, `container_id`, `session_id`, `created_by`, `pid` |
+| `terminal.closed` | `sandbox_id`, `container_id`, `session_id`, `close_reason`, `duration_ms`, `process_ended` |
+
+::: warning Runtime note
+When CubeAPI receives container metadata from CubeMaster, the Dashboard shows a
+container selector and binds the selected `containerID` to the terminal ticket.
+The current PTY bridge still uses envd's existing process API, so deployments
+should verify that their runtime maps that selection to the intended container
+before relying on per-container isolation for operational workflows.
+:::
+
+### 3.4 Configure the API key (only if auth is enabled)
 
 If your deployment has authentication turned on, the Dashboard needs an API key before any request will succeed.
 

@@ -26,10 +26,45 @@ function notFound(message: string) {
   return HttpResponse.json({ code: 404, message }, { status: 404 });
 }
 
+const MOCK_SESSION_TOKEN = 'mock-cube-session-token';
+
 export const handlers = [
   http.get('/cubeapi/v1/health', async () => {
     await mockDelay();
     return HttpResponse.json({ status: 'ok', sandboxes: listSandboxes().length });
+  }),
+
+  http.get('/cubeapi/v1/auth/session', async ({ request }) => {
+    await mockDelay();
+    const token = request.headers.get('x-session-token');
+    return HttpResponse.json({
+      authRequired: true,
+      authenticated: token === MOCK_SESSION_TOKEN,
+      username: token === MOCK_SESSION_TOKEN ? 'admin' : undefined,
+    });
+  }),
+
+  http.post('/cubeapi/v1/auth/login', async ({ request }) => {
+    await mockDelay();
+    const body = await request.json().catch(() => ({})) as { username?: string; password?: string };
+    if (body.username !== 'admin' || body.password !== 'admin') {
+      return HttpResponse.json({ code: 401, message: 'invalid username or password' }, { status: 401 });
+    }
+    return HttpResponse.json({
+      token: MOCK_SESSION_TOKEN,
+      username: 'admin',
+      expiresInSecs: 86_400,
+    });
+  }),
+
+  http.post('/cubeapi/v1/auth/logout', async () => {
+    await mockDelay();
+    return new HttpResponse(null, { status: 204 });
+  }),
+
+  http.post('/cubeapi/v1/auth/change-password', async () => {
+    await mockDelay();
+    return new HttpResponse(null, { status: 204 });
   }),
 
   http.get('/cubeapi/v1/cluster/overview', async () => {
@@ -117,6 +152,23 @@ export const handlers = [
     await mockDelay();
     const logs = getSandboxLogs(String(params.sandboxID));
     return logs ? HttpResponse.json(logs) : notFound(`sandbox ${params.sandboxID} not found`);
+  }),
+
+  http.post('/cubeapi/v1/sandboxes/:sandboxID/terminal/tickets', async ({ params, request }) => {
+    await mockDelay();
+    const sandboxID = String(params.sandboxID);
+    const sandbox = getSandboxDetail(sandboxID);
+    if (!sandbox) return notFound(`sandbox ${sandboxID} not found`);
+    const body = await request.json().catch(() => ({})) as { containerID?: string };
+    return HttpResponse.json(
+      {
+        ticket: `mock-${sandboxID}`,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        websocketUrl: `/cubeapi/v1/sandboxes/${sandboxID}/terminal/ws?ticket=mock-${sandboxID}`,
+        containerID: body.containerID,
+      },
+      { status: 201 },
+    );
   }),
 
   http.post('/cubeapi/v1/sandboxes', async ({ request }) => {

@@ -27,6 +27,42 @@
     "pause": "Pause",
     "kill": "Kill"
   },
+  "terminal": {
+    "title": "Terminal {{id}}",
+    "description": "Interactive sandbox terminal.",
+    "connecting": "Connecting to sandbox terminal...",
+    "started": "Terminal attached (pid {{pid}}).",
+    "exited": "Terminal exited with code {{code}}.",
+    "exitedWithError": "Terminal exited: {{message}}",
+    "idleTimeout": "Terminal closed after {{seconds}}s of inactivity.",
+    "session": "Session {{id}}",
+    "scrollback": "{{lines}} lines scrollback",
+    "container": {
+      "select": "Select terminal container",
+      "current": "Container {{id}}"
+    },
+    "status": {
+      "idle": "Idle",
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "closed": "Closed",
+      "error": "Error"
+    },
+    "actions": {
+      "open": "Terminal",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "fit": "Fit",
+      "reconnect": "Reconnect",
+      "close": "Close"
+    },
+    "errors": {
+      "websocket": "Terminal connection failed.",
+      "openFailed": "Failed to open terminal: {{message}}",
+      "invalidMessage": "Terminal received an invalid server message.",
+      "noRunningContainer": "No running container is available for terminal login."
+    }
+  },
   "errors": {
     "unknown": "Unknown error",
     "actionFailed": "Action failed: {{message}}",

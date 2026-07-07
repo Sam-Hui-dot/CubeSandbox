@@ -1076,6 +1076,18 @@ pub struct GetSandboxContainerItem {
     pub pause_at: i64,
 }
 
+/// Normalized container detail used by CubeAPI services.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct SandboxContainerDetail {
+    pub name: String,
+    pub container_id: String,
+    pub status: SandboxStatus,
+    pub image: String,
+    pub kind: String,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
 /// Normalized sandbox detail used by handlers (built from GetSandboxDataItem).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -1092,6 +1104,7 @@ pub struct SandboxDetail {
     pub disk_size_mb: i32,
     pub annotations: HashMap<String, String>,
     pub labels: HashMap<String, String>,
+    pub containers: Vec<SandboxContainerDetail>,
 }
 
 fn parse_cpu_millicores(s: &str) -> i32 {
@@ -1193,6 +1206,16 @@ fn sandbox_status_text_from_code(number: i32) -> &'static str {
     }
 }
 
+fn sandbox_status_from_code(number: i32) -> SandboxStatus {
+    match number {
+        1 => SandboxStatus::Running,
+        2 => SandboxStatus::Stopped,
+        4 => SandboxStatus::Pausing,
+        5 => SandboxStatus::Paused,
+        _ => SandboxStatus::Unknown,
+    }
+}
+
 fn deserialize_sandbox_status<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -1246,30 +1269,36 @@ impl GetSandboxResponse {
         let (cpu_count, memory_mb) = primary_container
             .map(|c| (parse_cpu_millicores(&c.cpu), parse_mem_mb(&c.mem)))
             .unwrap_or((0, 0));
-        let status = match item.status {
-            0 => SandboxStatus::Unknown, // CONTAINER_CREATED
-            1 => SandboxStatus::Running, // CONTAINER_RUNNING
-            2 => SandboxStatus::Stopped, // CONTAINER_EXITED
-            3 => SandboxStatus::Unknown, // CONTAINER_UNKNOWN
-            4 => SandboxStatus::Pausing, // CONTAINER_PAUSING
-            5 => SandboxStatus::Paused,  // CONTAINER_PAUSED
-            _ => SandboxStatus::Unknown,
-        };
+        let started_at = primary_container.and_then(|c| datetime_from_unix_nanos(c.create_at));
+        let status = sandbox_status_from_code(item.status);
         let template_id = extract_template_id(&item.template_id, &item.annotations, &item.labels);
         let sid = item.sandbox_id;
+        let containers = item
+            .containers
+            .into_iter()
+            .map(|container| SandboxContainerDetail {
+                name: container.name,
+                container_id: container.container_id,
+                status: sandbox_status_from_code(container.status),
+                image: container.image,
+                kind: container.kind,
+                started_at: datetime_from_unix_nanos(container.create_at),
+            })
+            .collect();
         Some(SandboxDetail {
             sandbox_id: sid.clone(),
             host_id: item.host_id,
             instance_type: instance_type.to_string(),
             status,
             template_id,
-            started_at: primary_container.and_then(|c| datetime_from_unix_nanos(c.create_at)),
+            started_at,
             end_at: item.end_at,
             cpu_count,
             memory_mb,
             disk_size_mb: 0,
             annotations: item.annotations,
             labels: item.labels,
+            containers,
         })
     }
 }
