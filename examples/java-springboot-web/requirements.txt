@@ -1,4 +1,4 @@
 aiohttp
-e2b==1.0.1
+e2b==2.7.0
 httpx
 python-dotenv

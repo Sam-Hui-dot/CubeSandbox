@@ -31,6 +31,7 @@ SERVICE_PORT = 8080
 SNAPSHOT_NAME = "java-springboot-maven-cache-checkpoint"
 LOCAL_OUTPUT_DIR = EXAMPLE_DIR / "output"
 LOCAL_MANIFEST = LOCAL_OUTPUT_DIR / "manifest.json"
+HTTP_HEADERS = {"accept-encoding": "identity"}
 SANDBOX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SANDBOX_ID_WITH_CLIENT_RE = re.compile(r"^([0-9a-f]{32})-[0-9a-f-]{36}$")
 
@@ -122,7 +123,7 @@ def _wait_for_health(sandbox, label: str) -> dict[str, object]:
     last_error: Exception | None = None
     for _ in range(60):
         try:
-            response = httpx.get(url, timeout=2)
+            response = httpx.get(url, headers=HTTP_HEADERS, timeout=2)
             if response.status_code == 200:
                 payload = response.json()
                 if payload.get("status") == "ok":
@@ -162,11 +163,8 @@ def _download_manifest(sandbox) -> dict[str, object]:
     temp_manifest = LOCAL_MANIFEST.with_name(f"{LOCAL_MANIFEST.name}.tmp")
     temp_manifest.unlink(missing_ok=True)
     try:
-        with httpx.stream("GET", sandbox.download_url(REMOTE_MANIFEST), timeout=60) as response:
-            response.raise_for_status()
-            with open(temp_manifest, "wb") as f:
-                for chunk in response.iter_raw():
-                    f.write(chunk)
+        manifest_text = _run_checked(sandbox, f"cat {shlex.quote(REMOTE_MANIFEST)}", "read manifest")
+        temp_manifest.write_text(manifest_text, encoding="utf-8")
     except Exception:
         temp_manifest.unlink(missing_ok=True)
         raise
@@ -194,7 +192,7 @@ def main() -> None:
     forked_sandbox_id = ""
     build_seconds = 0.0
 
-    with Sandbox(template=template_id) as sandbox:
+    with Sandbox.create(template=template_id) as sandbox:
         original_sandbox_id = sandbox.sandbox_id
         print(f"[Success] Sandbox {original_sandbox_id} is running")
 
@@ -204,7 +202,9 @@ def main() -> None:
 
         print("\n--- Step 2: Build with the template-warmed Maven cache ---")
         started = time.perf_counter()
-        build = sandbox.commands.run(f"cd {REMOTE_WORKDIR} && mvn --offline -DskipTests package")
+        build = sandbox.commands.run(
+            f"cd {REMOTE_WORKDIR} && mvn --offline -Dmaven.repo.local={REMOTE_MAVEN_REPO} -DskipTests package"
+        )
         build_seconds = time.perf_counter() - started
         if build.exit_code != 0:
             print(build.stdout)
@@ -228,7 +228,7 @@ def main() -> None:
         print("\n--- Step 3: Start Spring Boot and call it through CubeSandbox routing ---")
         _start_service(sandbox, "original")
         service_base = _service_base_url(sandbox)
-        info = httpx.get(f"{service_base}/api/info", timeout=10).json()
+        info = httpx.get(f"{service_base}/api/info", headers=HTTP_HEADERS, timeout=10).json()
         print(f"[Success] /api/info returned Java {info.get('javaVersion')}")
 
         task_payload = {
@@ -238,7 +238,7 @@ def main() -> None:
                 "stateFile": REMOTE_STATE_FILE,
             },
         }
-        create_response = httpx.post(f"{service_base}/api/tasks", json=task_payload, timeout=10)
+        create_response = httpx.post(f"{service_base}/api/tasks", json=task_payload, headers=HTTP_HEADERS, timeout=10)
         create_response.raise_for_status()
         task = create_response.json()
         task_id = str(task["id"])
@@ -254,7 +254,7 @@ def main() -> None:
 
     try:
         print("\n--- Step 5: Fork a fresh sandbox from the checkpoint snapshot ---")
-        with Sandbox(template=snapshot_id) as forked_sandbox:
+        with Sandbox.create(template=snapshot_id) as forked_sandbox:
             forked_sandbox_id = forked_sandbox.sandbox_id
             print(f"[Success] Forked sandbox {forked_sandbox_id} from checkpoint")
 
@@ -275,7 +275,9 @@ def main() -> None:
             print("\n--- Step 7: Start the fork directly from the inherited jar ---")
             _start_service(forked_sandbox, "forked")
             fork_base = _service_base_url(forked_sandbox)
-            inherited_task = httpx.get(f"{fork_base}/api/tasks/{task_id}", timeout=10).json()
+            inherited_task = httpx.get(
+                f"{fork_base}/api/tasks/{task_id}", headers=HTTP_HEADERS, timeout=10
+            ).json()
             if inherited_task.get("id") != task_id:
                 raise RuntimeError(f"Forked service did not return the expected task: {inherited_task}")
             print(f"[Success] Forked service read inherited task: {task_id}")

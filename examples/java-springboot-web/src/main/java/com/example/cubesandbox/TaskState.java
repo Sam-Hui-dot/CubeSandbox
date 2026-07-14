@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,7 @@ public class TaskState {
     private final Path stateFile;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
+    @Autowired
     public TaskState(
             ObjectMapper objectMapper,
             @Value("${cubesandbox.task-state-dir:/tmp/cubesandbox-spring/state}") String stateDir) {
