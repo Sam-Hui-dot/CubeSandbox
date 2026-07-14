@@ -62,6 +62,18 @@ def sandbox_identifier(sandbox: Any) -> str:
     return getattr(sandbox, "sandbox_id", getattr(sandbox, "id", "unknown"))
 
 
+def pause_sandbox(sandbox: Any) -> str:
+    pause = getattr(sandbox, "pause", None)
+    if callable(pause):
+        paused_id = pause()
+    else:
+        beta_pause = getattr(sandbox, "beta_pause", None)
+        if not callable(beta_pause):
+            raise AttributeError("Sandbox object does not support pause or beta_pause")
+        paused_id = beta_pause()
+    return paused_id if isinstance(paused_id, str) and paused_id else sandbox_identifier(sandbox)
+
+
 def warn_direct_secret_env(key_name: str) -> None:
     if _secret_is_present(os.environ.get(key_name)):
         print(

@@ -13,7 +13,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _opencode_common import ensure_success, redact_secrets, run_command, stream_writer
+from _opencode_common import (
+    ensure_success,
+    pause_sandbox,
+    redact_secrets,
+    run_command,
+    stream_writer,
+)
 
 
 @dataclass
@@ -37,6 +43,20 @@ class FakeSandbox:
         self.commands = EnvOnlyCommands()
 
 
+class PauseSandbox:
+    sandbox_id = "sandbox-id"
+
+    def pause(self) -> str:
+        return "paused-id"
+
+
+class BetaPauseSandbox:
+    sandbox_id = "beta-sandbox-id"
+
+    def beta_pause(self) -> None:
+        return None
+
+
 class CommonHelperTest(unittest.TestCase):
     def test_run_command_uses_env_keyword_when_envs_is_not_supported(self) -> None:
         sandbox = FakeSandbox()
@@ -46,6 +66,12 @@ class CommonHelperTest(unittest.TestCase):
             sandbox.commands.kwargs,
             {"command": "true", "env": {"OPENAI_API_KEY": "placeholder"}},
         )
+
+    def test_pause_sandbox_uses_pause_when_available(self) -> None:
+        self.assertEqual(pause_sandbox(PauseSandbox()), "paused-id")
+
+    def test_pause_sandbox_falls_back_to_beta_pause(self) -> None:
+        self.assertEqual(pause_sandbox(BetaPauseSandbox()), "beta-sandbox-id")
 
     def test_redact_secrets_hides_known_env_values(self) -> None:
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-secret-value"}, clear=True):

@@ -15,6 +15,7 @@ from e2b import Sandbox
 
 from _opencode_common import (
     ensure_success,
+    pause_sandbox,
     run_command,
     sandbox_identifier,
     warn_direct_secret_env,
@@ -197,9 +198,7 @@ def main() -> int:
         ensure_success(result_1, "run OpenCode turn 1")
 
         print(f"\nPausing sandbox {sandbox_id}...")
-        paused_id = sandbox.pause()
-        if isinstance(paused_id, str) and paused_id:
-            sandbox_id = paused_id
+        sandbox_id = pause_sandbox(sandbox)
         print(f"Paused. Resume handle: {sandbox_id}")
 
         print(f"\nReconnecting to {sandbox_id}...")
