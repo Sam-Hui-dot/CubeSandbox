@@ -38,9 +38,19 @@ class EnvOnlyCommands:
         return FakeResult()
 
 
+class NoEnvCommands:
+    def run(self, command: str):
+        return FakeResult(stdout=command)
+
+
 class FakeSandbox:
     def __init__(self) -> None:
         self.commands = EnvOnlyCommands()
+
+
+class NoEnvSandbox:
+    def __init__(self) -> None:
+        self.commands = NoEnvCommands()
 
 
 class PauseSandbox:
@@ -66,6 +76,10 @@ class CommonHelperTest(unittest.TestCase):
             sandbox.commands.kwargs,
             {"command": "true", "env": {"OPENAI_API_KEY": "placeholder"}},
         )
+
+    def test_run_command_fails_when_env_kwarg_is_not_supported(self) -> None:
+        with self.assertRaisesRegex(TypeError, "env or envs parameter"):
+            run_command(NoEnvSandbox(), "true", envs={"OPENAI_API_KEY": "placeholder"})
 
     def test_pause_sandbox_uses_pause_when_available(self) -> None:
         self.assertEqual(pause_sandbox(PauseSandbox()), "paused-id")

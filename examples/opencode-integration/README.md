@@ -73,6 +73,8 @@ Required values:
 | `CUBE_TEMPLATE_ID` | Template ID created in step 2 |
 | `OPENCODE_MODEL` | OpenCode model in `provider/model` form |
 | `<PROVIDER>_API_KEY` | API key matching the provider prefix |
+| `CUBE_API_URL` | Required for `network_policy.py`; native CubeSandbox SDK CubeAPI URL |
+| `CUBE_PROXY_NODE_IP` | Required for `network_policy.py`; CubeProxy IP used for command streams |
 
 Use `OPENCODE_BASE_URL` for OpenAI-compatible custom endpoints. If it is not
 set, the scripts also accept provider-specific variables such as
@@ -89,8 +91,9 @@ CUBE_DEV_SIDECAR=1
 The sidecar patches the E2B SDK so sandbox traffic is routed through the
 dev-env CubeProxy port forwards.
 
-`network_policy.py` uses the native `cubesandbox` SDK. When running that script
-against `dev-env/`, also set the native SDK's API and proxy variables:
+`network_policy.py` uses the native `cubesandbox` SDK instead of the E2B SDK, so
+it reads `CUBE_API_URL` and `CUBE_PROXY_NODE_IP`. When running that script
+against `dev-env/`, use the forwarded native SDK API and proxy variables:
 
 ```bash
 CUBE_API_URL=http://127.0.0.1:13000

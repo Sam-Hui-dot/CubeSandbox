@@ -94,7 +94,11 @@ def _command_env_kwarg(commands_type: type) -> str:
         return "envs"
     if "env" in params:
         return "env"
-    return "envs"
+    supported = ", ".join(params) or "<none>"
+    raise TypeError(
+        "sandbox.commands.run does not expose an env or envs parameter; "
+        f"supported parameters: {supported}"
+    )
 
 
 @lru_cache(maxsize=None)

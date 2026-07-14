@@ -138,13 +138,17 @@ def print_command_output(result) -> None:
         print(stderr, file=sys.stderr)
 
 
+def require_native_sdk_env() -> None:
+    required("CUBE_API_URL")
+    required("CUBE_PROXY_NODE_IP")
+
+
 def main() -> int:
     load_local_dotenv()
     args = parse_args()
 
     template_id = args.template or required("CUBE_TEMPLATE_ID")
-    required("E2B_API_URL")
-    required("E2B_API_KEY")
+    require_native_sdk_env()
     model = opencode_model()
     provider = opencode_provider(model)
     secret = require_provider_key(provider)

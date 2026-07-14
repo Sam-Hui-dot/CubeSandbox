@@ -72,6 +72,8 @@ pip install -r requirements.txt
 | `CUBE_TEMPLATE_ID` | 第 2 步创建的模板 ID |
 | `OPENCODE_MODEL` | `provider/model` 形式的 OpenCode 模型 |
 | `<PROVIDER>_API_KEY` | 与 provider 前缀匹配的 API key |
+| `CUBE_API_URL` | `network_policy.py` 必填；原生 CubeSandbox SDK 的 CubeAPI 地址 |
+| `CUBE_PROXY_NODE_IP` | `network_policy.py` 必填；命令流使用的 CubeProxy IP |
 
 如需使用 OpenAI-compatible 自定义端点，设置 `OPENCODE_BASE_URL`。如果未设置，
 脚本也接受 provider-specific 变量，例如 `OPENAI_BASE_URL`。脚本会在沙箱
@@ -85,7 +87,9 @@ CUBE_DEV_SIDECAR=1
 
 sidecar 会 patch E2B SDK，让 sandbox 流量走 dev-env 的 CubeProxy 端口转发。
 
-`network_policy.py` 使用原生 `cubesandbox` SDK。用 `dev-env/` 跑这个脚本时，还需要设置原生 SDK 的 API 和代理变量：
+`network_policy.py` 使用原生 `cubesandbox` SDK，而不是 E2B SDK，所以会读取
+`CUBE_API_URL` 和 `CUBE_PROXY_NODE_IP`。用 `dev-env/` 跑这个脚本时，使用下面的
+原生 SDK API 和代理端口转发变量：
 
 ```bash
 CUBE_API_URL=http://127.0.0.1:13000
