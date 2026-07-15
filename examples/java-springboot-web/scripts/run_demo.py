@@ -31,7 +31,9 @@ SERVICE_PORT = 8080
 SNAPSHOT_NAME = "java-springboot-maven-cache-checkpoint"
 LOCAL_OUTPUT_DIR = EXAMPLE_DIR / "output"
 LOCAL_MANIFEST = LOCAL_OUTPUT_DIR / "manifest.json"
-HTTP_HEADERS = {"accept-encoding": "identity"}
+# CubeProxy currently decompresses routed responses, so request identity encoding
+# to keep httpx from attempting a second decompression pass.
+ROUTED_HTTP_HEADERS = {"accept-encoding": "identity"}
 SANDBOX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SANDBOX_ID_WITH_CLIENT_RE = re.compile(r"^([0-9a-f]{32})-[0-9a-f-]{36}$")
 
@@ -58,9 +60,9 @@ def _cube_sandbox_id(sandbox_id: str) -> str:
     raise ValueError(f"Unexpected Cube sandbox id format: {sandbox_id}")
 
 
-def _create_checkpoint_snapshot(api_url: str, sandbox_id: str) -> str:
+def _create_checkpoint_snapshot(client: httpx.Client, api_url: str, sandbox_id: str) -> str:
     cube_id = _cube_sandbox_id(sandbox_id)
-    response = httpx.post(
+    response = client.post(
         f"{api_url.rstrip('/')}/sandboxes/{cube_id}/snapshots",
         headers=_cube_api_headers(),
         json={"name": SNAPSHOT_NAME},
@@ -74,8 +76,8 @@ def _create_checkpoint_snapshot(api_url: str, sandbox_id: str) -> str:
     return snapshot_id
 
 
-def _delete_checkpoint_snapshot(api_url: str, snapshot_id: str) -> None:
-    response = httpx.delete(
+def _delete_checkpoint_snapshot(client: httpx.Client, api_url: str, snapshot_id: str) -> None:
+    response = client.delete(
         f"{api_url.rstrip('/')}/templates/{snapshot_id}",
         headers=_cube_api_headers(),
         timeout=240,
@@ -105,6 +107,7 @@ def _upload_project(sandbox) -> None:
         "src/main/java/com/example/cubesandbox/DemoApplication.java",
         "src/main/java/com/example/cubesandbox/HealthController.java",
         "src/main/java/com/example/cubesandbox/InfoController.java",
+        "src/main/java/com/example/cubesandbox/CreateTaskRequest.java",
         "src/main/java/com/example/cubesandbox/TaskController.java",
         "src/main/java/com/example/cubesandbox/TaskState.java",
     ]
@@ -118,44 +121,88 @@ def _service_base_url(sandbox) -> str:
     return f"http://{sandbox.get_host(SERVICE_PORT)}"
 
 
-def _wait_for_health(sandbox, label: str) -> dict[str, object]:
+def _wait_for_health(client: httpx.Client, sandbox, label: str) -> dict[str, object]:
     url = f"{_service_base_url(sandbox)}/health"
     last_error: Exception | None = None
-    for _ in range(60):
+    last_detail = "no response"
+    for attempt in range(1, 61):
         try:
-            response = httpx.get(url, headers=HTTP_HEADERS, timeout=2)
+            response = client.get(url, timeout=2)
             if response.status_code == 200:
                 payload = response.json()
                 if payload.get("status") == "ok":
                     return payload
+            last_detail = f"HTTP {response.status_code}: {response.text[:160]}"
         except Exception as exc:
             last_error = exc
+            last_detail = f"{type(exc).__name__}: {exc}"
+        if attempt == 1 or attempt % 10 == 0:
+            print(f"[Wait] {label} health check {attempt}/60: {last_detail}")
         time.sleep(1)
-    raise RuntimeError(f"{label} did not become healthy at {url}") from last_error
+    raise RuntimeError(f"{label} did not become healthy at {url}; last result: {last_detail}") from last_error
 
 
-def _start_service(sandbox, label: str) -> None:
+def _start_service(client: httpx.Client, sandbox, label: str) -> None:
     command = f"""
         cd {shlex.quote(REMOTE_WORKDIR)}
         JAR="$(ls target/*.jar | grep -v '\\.original$' | head -n1)"
         test -n "$JAR"
-        nohup java -jar "$JAR" > app.log 2>&1 &
+        nohup java $SPRING_BOOT_JAVA_OPTS -jar "$JAR" > app.log 2>&1 &
         echo $! > app.pid
     """
     _run_checked(sandbox, f"bash -lc {shlex.quote(command)}", f"start {label} Spring Boot service")
-    _wait_for_health(sandbox, label)
+    try:
+        _wait_for_health(client, sandbox, label)
+    except RuntimeError:
+        app_log = sandbox.commands.run(
+            f"bash -lc {shlex.quote(f'cd {REMOTE_WORKDIR} && tail -n 80 app.log 2>/dev/null || true')}"
+        )
+        if app_log.stdout.strip():
+            print(f"[Diagnostic] Last {label} Spring Boot log lines:\n{app_log.stdout.rstrip()}")
+        raise
 
 
-def _stop_service(sandbox) -> None:
+def _stop_service(sandbox, label: str) -> None:
     command = f"""
         cd {shlex.quote(REMOTE_WORKDIR)}
         if test -f app.pid; then
-            kill "$(cat app.pid)" 2>/dev/null || true
+            pid="$(cat app.pid)"
+            kill "$pid" 2>/dev/null || true
+            attempts=0
+            while kill -0 "$pid" 2>/dev/null && test "$attempts" -lt 30; do
+                attempts=$((attempts + 1))
+                sleep 1
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+                sleep 1
+            fi
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Spring Boot process $pid did not exit" >&2
+                exit 1
+            fi
             rm -f app.pid
         fi
-        sleep 1
     """
-    sandbox.commands.run(f"bash -lc {shlex.quote(command)}")
+    _run_checked(sandbox, f"bash -lc {shlex.quote(command)}", f"stop {label} Spring Boot service")
+    print(f"[Success] {label.capitalize()} Spring Boot process exited")
+
+
+def _verify_egress_blocked(sandbox) -> None:
+    from e2b import CommandExitException
+
+    try:
+        sandbox.commands.run(
+            "curl --noproxy '*' --silent --show-error --connect-timeout 3 --max-time 5 https://example.com"
+        )
+    except CommandExitException as exc:
+        if exc.exit_code not in {5, 6, 7, 28}:
+            raise RuntimeError(
+                f"Public egress probe failed for an unexpected reason (exit {exc.exit_code}): {exc.stderr}"
+            ) from exc
+        print("[Success] Public egress is blocked by allow_internet_access=False")
+        return
+    raise RuntimeError("Public egress probe unexpectedly succeeded in a default-deny sandbox")
 
 
 def _download_manifest(sandbox) -> dict[str, object]:
@@ -172,17 +219,7 @@ def _download_manifest(sandbox) -> dict[str, object]:
     return json.loads(LOCAL_MANIFEST.read_text(encoding="utf-8"))
 
 
-def main() -> None:
-    _load_environment()
-    setup_dev_sidecar()
-
-    from e2b import Sandbox
-
-    template_id = os.environ.get("CUBE_TEMPLATE_ID")
-    api_url = os.environ.get("E2B_API_URL", "http://127.0.0.1:13000")
-    if not template_id:
-        raise RuntimeError("Please set CUBE_TEMPLATE_ID in .env or your shell environment.")
-
+def _run_workflow(client: httpx.Client, sandbox_class, template_id: str, api_url: str) -> None:
     print(f"Connecting to Cube Sandbox API at: {api_url}")
     print(f"Booting Java Spring Boot dev/test sandbox from template: {template_id}")
 
@@ -192,11 +229,13 @@ def main() -> None:
     forked_sandbox_id = ""
     build_seconds = 0.0
 
-    with Sandbox.create(template=template_id) as sandbox:
+    with sandbox_class.create(template=template_id, allow_internet_access=False) as sandbox:
         original_sandbox_id = sandbox.sandbox_id
         print(f"[Success] Sandbox {original_sandbox_id} is running")
 
-        print("\n--- Step 1: Upload the Spring Boot backend project ---")
+        print("\n--- Step 1: Prove default-deny egress and upload the project ---")
+        _verify_egress_blocked(sandbox)
+
         _upload_project(sandbox)
         print(f"[Success] Project uploaded to {REMOTE_WORKDIR}")
 
@@ -226,9 +265,11 @@ def main() -> None:
         print(f"[Success] Built artifact: {artifact_check}")
 
         print("\n--- Step 3: Start Spring Boot and call it through CubeSandbox routing ---")
-        _start_service(sandbox, "original")
+        _start_service(client, sandbox, "original")
         service_base = _service_base_url(sandbox)
-        info = httpx.get(f"{service_base}/api/info", headers=HTTP_HEADERS, timeout=10).json()
+        info_response = client.get(f"{service_base}/api/info")
+        info_response.raise_for_status()
+        info = info_response.json()
         print(f"[Success] /api/info returned Java {info.get('javaVersion')}")
 
         task_payload = {
@@ -238,7 +279,7 @@ def main() -> None:
                 "stateFile": REMOTE_STATE_FILE,
             },
         }
-        create_response = httpx.post(f"{service_base}/api/tasks", json=task_payload, headers=HTTP_HEADERS, timeout=10)
+        create_response = client.post(f"{service_base}/api/tasks", json=task_payload)
         create_response.raise_for_status()
         task = create_response.json()
         task_id = str(task["id"])
@@ -247,14 +288,16 @@ def main() -> None:
         _run_checked(sandbox, f"test -s {REMOTE_STATE_FILE}", "verify task state file")
         print(f"[Success] Stateful workspace file exists: {REMOTE_STATE_FILE}")
 
-        print("\n--- Step 4: Stop the service and snapshot the build output and state ---")
-        _stop_service(sandbox)
-        snapshot_id = _create_checkpoint_snapshot(api_url, sandbox.sandbox_id)
+        print("\n--- Step 4: Stop, flush persistent state, and create a checkpoint ---")
+        _stop_service(sandbox, "original")
+        _run_checked(sandbox, f"sync {shlex.quote(REMOTE_STATE_FILE)}", "flush task state")
+        print(f"[Success] Persistent task state flushed before snapshot: {REMOTE_STATE_FILE}")
+        snapshot_id = _create_checkpoint_snapshot(client, api_url, sandbox.sandbox_id)
         print(f"[Success] Snapshot checkpoint created: {snapshot_id}")
 
     try:
         print("\n--- Step 5: Fork a fresh sandbox from the checkpoint snapshot ---")
-        with Sandbox.create(template=snapshot_id) as forked_sandbox:
+        with sandbox_class.create(template=snapshot_id, allow_internet_access=False) as forked_sandbox:
             forked_sandbox_id = forked_sandbox.sandbox_id
             print(f"[Success] Forked sandbox {forked_sandbox_id} from checkpoint")
 
@@ -273,11 +316,11 @@ def main() -> None:
             print("[Success] Fork inherited Maven cache, built jar, and task state")
 
             print("\n--- Step 7: Start the fork directly from the inherited jar ---")
-            _start_service(forked_sandbox, "forked")
+            _start_service(client, forked_sandbox, "forked")
             fork_base = _service_base_url(forked_sandbox)
-            inherited_task = httpx.get(
-                f"{fork_base}/api/tasks/{task_id}", headers=HTTP_HEADERS, timeout=10
-            ).json()
+            inherited_response = client.get(f"{fork_base}/api/tasks/{task_id}")
+            inherited_response.raise_for_status()
+            inherited_task = inherited_response.json()
             if inherited_task.get("id") != task_id:
                 raise RuntimeError(f"Forked service did not return the expected task: {inherited_task}")
             print(f"[Success] Forked service read inherited task: {task_id}")
@@ -288,7 +331,7 @@ def main() -> None:
                     "spring_boot_web_service",
                     "snapshot_warmed_maven_cache",
                     "stateful_workspace_fork",
-                    "restricted_egress_ready",
+                    "default_deny_egress_offline_build",
                 ],
                 "original_sandbox_id": original_sandbox_id,
                 "checkpoint_snapshot_id": snapshot_id,
@@ -299,6 +342,8 @@ def main() -> None:
                 "artifact_inherited": True,
                 "maven_cache_inherited": True,
                 "service_called_through_cube_routing": True,
+                "internet_access_denied": True,
+                "state_flushed_before_snapshot": True,
             }
             _run_checked(forked_sandbox, "mkdir -p /tmp/cubesandbox-spring/result", "create result directory")
             forked_sandbox.files.write(REMOTE_MANIFEST, json.dumps(manifest, indent=2))
@@ -311,7 +356,7 @@ def main() -> None:
             print("\n--- Cleanup: Delete checkpoint snapshot ---")
             has_active_error = sys.exc_info()[0] is not None
             try:
-                _delete_checkpoint_snapshot(api_url, snapshot_id)
+                _delete_checkpoint_snapshot(client, api_url, snapshot_id)
                 print(f"[Success] Snapshot deleted: {snapshot_id}")
             except Exception as cleanup_error:
                 print(f"[WARN] Failed to delete snapshot {snapshot_id}: {cleanup_error}")
@@ -319,6 +364,21 @@ def main() -> None:
                     raise
 
     print("\n[Finished] Java Spring Boot dev/test sandbox flow completed successfully")
+
+
+def main() -> None:
+    _load_environment()
+    setup_dev_sidecar()
+
+    from e2b import Sandbox
+
+    template_id = os.environ.get("CUBE_TEMPLATE_ID")
+    api_url = os.environ.get("E2B_API_URL", "http://127.0.0.1:13000")
+    if not template_id:
+        raise RuntimeError("Please set CUBE_TEMPLATE_ID in .env or your shell environment.")
+
+    with httpx.Client(headers=ROUTED_HTTP_HEADERS, timeout=10) as client:
+        _run_workflow(client, Sandbox, template_id, api_url)
 
 
 if __name__ == "__main__":

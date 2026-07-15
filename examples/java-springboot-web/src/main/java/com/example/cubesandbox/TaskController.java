@@ -21,8 +21,8 @@ public class TaskController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, Object> createTask(@RequestBody(required = false) Map<String, Object> request) {
-        return taskState.createTask(request == null ? Map.of() : request);
+    public Map<String, Object> createTask(@RequestBody(required = false) CreateTaskRequest request) {
+        return taskState.createTask(request == null ? CreateTaskRequest.empty() : request);
     }
 
     @GetMapping("/{id}")

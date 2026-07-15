@@ -1,4 +1,4 @@
-aiohttp
+aiohttp==3.14.1
 e2b==2.7.0
-httpx
-python-dotenv
+httpx==0.27.2
+python-dotenv==1.0.1

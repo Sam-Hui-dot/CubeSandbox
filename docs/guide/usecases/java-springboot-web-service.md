@@ -26,7 +26,7 @@ CubeSandbox. The template warms Maven dependencies during a controlled image
 build step. The demo then performs an offline build, starts a Spring Boot
 service, calls it through CubeSandbox routing, creates task state, snapshots the
 workspace, and forks a fresh sandbox that reuses both build artifacts and
-service data.
+service data. Both runtime sandboxes use default-deny public egress.
 
 ## Key Challenges
 
@@ -40,9 +40,9 @@ service data.
 
 ## Solution With CubeSandbox
 
-The template builds from `ghcr.io/tencentcloud/cubesandbox-base:latest` and
-installs Java 21, Maven, curl, and bash. The included Spring Boot project exposes
-four endpoints:
+The template uses digest-pinned CubeSandbox and Maven base images and installs
+Java 21, Maven, curl, and bash. The included Spring Boot project exposes four
+endpoints:
 
 - `GET /health`
 - `GET /api/info`
@@ -53,17 +53,18 @@ The task API persists state to
 `/tmp/cubesandbox-spring/state/tasks.json`. The demo script then runs this
 sequence:
 
-1. Create a sandbox from the Java/Spring Boot template.
-2. Upload the Spring Boot project.
-3. Run `mvn --offline -DskipTests package` using the template-warmed
+1. Create a sandbox with `allow_internet_access=False`.
+2. Prove direct public HTTPS egress is blocked.
+3. Upload the Spring Boot project.
+4. Run `mvn --offline -DskipTests package` using the template-warmed
    `/workspace/.m2/repository` and build `target/*.jar`.
-4. Start the service and call it through CubeSandbox routing on port `8080`.
-5. Create a task and verify the state file exists.
-6. Stop the service and create a CubeSandbox checkpoint snapshot.
-7. Fork a fresh sandbox from the checkpoint.
-8. Verify that the fork inherited Maven cache, the built jar, and task state.
-9. Start Spring Boot directly from the inherited jar and read the original task.
-10. Download a manifest proving cache, artifact, state, and routing checks.
+5. Start the service and call it through CubeSandbox routing on port `8080`.
+6. Create a task and verify the state file exists.
+7. Stop the JVM, wait for exit, flush state, and create a checkpoint snapshot.
+8. Fork a fresh default-deny sandbox from the checkpoint.
+9. Verify that the fork inherited Maven cache, the built jar, and task state.
+10. Start Spring Boot directly from the inherited jar and read the original task.
+11. Download a manifest proving egress, cache, artifact, state, and routing checks.
 
 This shows CubeSandbox as a reusable JVM backend development environment rather
 than a generic Java runtime image.
@@ -75,15 +76,17 @@ than a generic Java runtime image.
   for dependency-heavy projects.
 - Shows stateful workspace inheritance across forked sandboxes.
 - Uses normal HTTP service routing through CubeProxy.
+- Proves an offline Maven build succeeds while public egress is denied.
 - Produces a small JSON manifest that reviewers can inspect after the run.
 - Keeps the v1 scope focused by avoiding external databases and multi-container
   orchestration.
 
 ## Restricted-Egress Operation
 
-The Dockerfile performs Maven dependency warmup during template build and the
-runtime demo uses Maven offline mode. In production or restricted-egress
-clusters, the same pattern can be adapted in three ways:
+The Dockerfile performs Maven dependency warmup during a controlled template
+build. At runtime, the demo proves public HTTPS is blocked under
+`allow_internet_access=False` before it completes the Maven offline build. In
+production or regulated clusters, the same pattern can be adapted in three ways:
 
 - Prebuild the template image with dependencies already downloaded.
 - Configure Maven to use an internal repository mirror.

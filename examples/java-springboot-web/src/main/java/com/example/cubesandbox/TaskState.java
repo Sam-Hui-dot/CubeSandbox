@@ -24,6 +24,8 @@ import org.springframework.web.server.ResponseStatusException;
 @Component
 public class TaskState {
     private static final int MAX_STORED_TASKS = 100;
+    private static final int MAX_TITLE_LENGTH = 200;
+    private static final int MAX_PAYLOAD_BYTES = 16 * 1024;
     private static final Duration TASK_TTL = Duration.ofHours(12);
     private static final String STATE_FILE_NAME = "tasks.json";
     private static final TypeReference<Map<String, Map<String, Object>>> TASKS_TYPE =
@@ -47,7 +49,9 @@ public class TaskState {
         this.stateFile = stateDir.resolve(STATE_FILE_NAME);
     }
 
-    public Map<String, Object> createTask(Map<String, Object> request) {
+    public Map<String, Object> createTask(CreateTaskRequest request) {
+        String title = validatedTitle(request.title());
+        Map<String, Object> payload = validatedPayload(request.payload());
         lock.writeLock().lock();
         try {
             Map<String, Map<String, Object>> tasks = readTasks();
@@ -56,10 +60,10 @@ public class TaskState {
             String id = UUID.randomUUID().toString();
             Map<String, Object> task = new LinkedHashMap<>();
             task.put("id", id);
-            task.put("title", String.valueOf(request.getOrDefault("title", "demo task")));
+            task.put("title", title);
             task.put("status", "created");
             task.put("createdAt", now.toString());
-            task.put("payload", request.getOrDefault("payload", Map.of()));
+            task.put("payload", payload);
             task.put("stateFile", stateFile.toString());
             tasks.put(id, task);
             writeTasks(tasks);
@@ -80,6 +84,30 @@ public class TaskState {
         } finally {
             lock.readLock().unlock();
         }
+    }
+
+    private String validatedTitle(String requestedTitle) {
+        String title = requestedTitle == null || requestedTitle.isBlank() ? "demo task" : requestedTitle.strip();
+        if (title.length() > MAX_TITLE_LENGTH) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Task title must not exceed " + MAX_TITLE_LENGTH + " characters");
+        }
+        return title;
+    }
+
+    private Map<String, Object> validatedPayload(Map<String, Object> requestedPayload) {
+        Map<String, Object> payload =
+                requestedPayload == null ? Map.of() : new LinkedHashMap<>(requestedPayload);
+        try {
+            if (objectMapper.writeValueAsBytes(payload).length > MAX_PAYLOAD_BYTES) {
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "Task payload must not exceed " + MAX_PAYLOAD_BYTES + " serialized bytes");
+            }
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Task payload is not serializable", e);
+        }
+        return payload;
     }
 
     private void pruneTasks(Map<String, Map<String, Object>> tasks, Instant now) {

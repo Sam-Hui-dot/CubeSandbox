@@ -7,7 +7,7 @@ development and testing. The template warms the Maven dependency cache during a
 controlled build step, then the demo runs an offline Spring Boot build, starts a
 real HTTP service, snapshots that workspace, forks a fresh sandbox from the
 checkpoint, and proves that the fork can reuse both the compiled jar and
-stateful task data.
+stateful task data. Both runtime sandboxes use default-deny public egress.
 
 ## What It Demonstrates
 
@@ -22,10 +22,9 @@ stateful task data.
    sandbox.
 4. **Web service routing**: the demo calls the Spring Boot service through
    CubeSandbox routing with `sandbox.get_host(8080)`.
-5. **Restricted-egress readiness**: dynamic Maven downloads are treated as a
-   development mode; production deployments can prebuild dependencies, use an
-   internal Maven mirror, or snapshot a warmed cache from a controlled build
-   step.
+5. **Verified default-deny egress**: the demo creates sandboxes with
+   `allow_internet_access=False`, proves a public HTTPS request is blocked, and
+   still completes the Maven build with `--offline`.
 
 ## Why This Matters For CubeSandbox
 
@@ -38,8 +37,8 @@ and disposable feature branches that still need a realistic JVM service.
 
 ## Files
 
-- `Dockerfile`: Java 21 + Maven image built on `cubesandbox-base`, with a
-  pre-warmed Maven dependency cache.
+- `Dockerfile`: Java 21 + Maven image built from digest-pinned base images, with
+  a pre-warmed Maven dependency cache.
 - `pom.xml` and `src/main/...`: minimal Spring Boot backend service.
 - `scripts/run_demo.py`: end-to-end CubeSandbox demo using the E2B-compatible
   SDK and local dev sidecar.
@@ -102,20 +101,21 @@ python3 scripts/run_demo.py
 
 The script will:
 
-1. Create a sandbox from the Java/Spring Boot template.
-2. Upload the Spring Boot project into `/workspace/java-springboot-web`.
-3. Run `mvn --offline -DskipTests package` using the template-warmed Maven
+1. Create a default-deny sandbox from the Java/Spring Boot template.
+2. Prove direct public HTTPS egress is blocked.
+3. Upload the Spring Boot project into `/workspace/java-springboot-web`.
+4. Run `mvn --offline -DskipTests package` using the template-warmed Maven
    cache and build the jar.
-4. Start the service and call `/health`, `/api/info`, and `POST /api/tasks`
+5. Start the service and call `/health`, `/api/info`, and `POST /api/tasks`
    through CubeSandbox routing.
-5. Verify that task state was written to
+6. Verify that task state was written to
    `/tmp/cubesandbox-spring/state/tasks.json`.
-6. Stop the service and create a checkpoint snapshot.
-7. Start a fresh sandbox from the snapshot.
-8. Verify that `/workspace/.m2/repository`, `target/*.jar`, and the task state
+7. Stop the JVM, wait for process exit, flush state, and create a checkpoint.
+8. Start a fresh default-deny sandbox from the snapshot.
+9. Verify that `/workspace/.m2/repository`, `target/*.jar`, and the task state
    file were inherited.
-9. Start Spring Boot directly from the inherited jar and read the original task.
-10. Download `output/manifest.json` with a machine-readable proof of the run.
+10. Start Spring Boot directly from the inherited jar and read the original task.
+11. Download `output/manifest.json` with a machine-readable proof of the run.
 
 The manifest includes:
 
@@ -126,19 +126,22 @@ The manifest includes:
     "spring_boot_web_service",
     "snapshot_warmed_maven_cache",
     "stateful_workspace_fork",
-    "restricted_egress_ready"
+    "default_deny_egress_offline_build"
   ],
   "state_inherited": true,
   "artifact_inherited": true,
-  "maven_cache_inherited": true
+  "maven_cache_inherited": true,
+  "internet_access_denied": true,
+  "state_flushed_before_snapshot": true
 }
 ```
 
 ## Restricted-Egress Notes
 
-The Dockerfile intentionally performs Maven dependency warmup during template
-build, and the runtime demo uses Maven offline mode. For production, regulated,
-or restricted-egress clusters, use one of these patterns:
+The Dockerfile performs Maven dependency warmup during the controlled template
+build. At runtime, both sandboxes use `allow_internet_access=False`; the demo
+first verifies that a public HTTPS request fails, then builds with Maven offline
+mode. For production or regulated clusters, use one of these patterns:
 
 - Prebuild the template image with dependencies already downloaded.
 - Point Maven at an internal repository mirror through `settings.xml`.
@@ -155,14 +158,14 @@ redownload dependencies.
 - JVM container hint:
 
 ```bash
-JAVA_TOOL_OPTIONS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75"
+SPRING_BOOT_JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75"
 ```
 
 ## Known Limitations
 
 - This example intentionally avoids Redis, MySQL, Kafka, and multi-service
   orchestration so the snapshot/fork workflow stays easy to run.
-- The first Maven build needs network access unless dependencies are prebuilt
-  into the template or served from an internal mirror.
+- Building the template image needs controlled network access unless its base
+  images and Maven dependencies are supplied by internal mirrors.
 - Snapshot timing depends on the local CubeSandbox deployment and storage
   backend.

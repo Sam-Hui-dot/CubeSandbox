@@ -1,7 +1,7 @@
 package com.example.cubesandbox;
 
 import static org.hamcrest.Matchers.notNullValue;
-import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -26,13 +26,22 @@ class TaskControllerTest {
 
     @Test
     void createTaskAcceptsEmptyBody() throws Exception {
-        when(taskState.createTask(anyMap()))
+        when(taskState.createTask(any(CreateTaskRequest.class)))
                 .thenReturn(Map.of("id", "task-1", "title", "demo task", "status", "created"));
 
         mockMvc.perform(post("/api/tasks").contentType(MediaType.APPLICATION_JSON))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id", notNullValue()))
                 .andExpect(jsonPath("$.status").value("created"));
+    }
+
+    @Test
+    void createTaskRejectsUnknownFields() throws Exception {
+        mockMvc.perform(
+                        post("/api/tasks")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"title\":\"demo\",\"unexpected\":true}"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
