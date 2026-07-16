@@ -5,10 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +19,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpStatus;
@@ -29,7 +33,7 @@ class TaskStateTest {
 
     @Test
     void createTaskPersistsStateAndCanReadItBack() throws Exception {
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
 
         Map<String, Object> created =
                 taskState.createTask(new CreateTaskRequest("ship demo", Map.of("priority", "high")));
@@ -37,13 +41,23 @@ class TaskStateTest {
 
         assertThat(loaded).containsEntry("title", "ship demo");
         assertThat(loaded.get("payload")).isEqualTo(Map.of("priority", "high"));
-        assertThat(loaded.get("stateFile")).isEqualTo(tempDir.resolve("tasks.json").toString());
+        assertThat(loaded).containsEntry("persisted", true);
+        assertThat(loaded).doesNotContainKey("stateFile");
         assertThat(Files.exists(tempDir.resolve("tasks.json"))).isTrue();
     }
 
     @Test
+    void createTaskDefaultsBlankTitle() {
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
+
+        Map<String, Object> created = taskState.createTask(new CreateTaskRequest("   ", null));
+
+        assertThat(created).containsEntry("title", "demo task");
+    }
+
+    @Test
     void getTaskReturnsNotFoundForMissingId() {
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
 
         assertThatThrownBy(() -> taskState.getTask("missing"))
                 .isInstanceOfSatisfying(
@@ -54,9 +68,27 @@ class TaskStateTest {
     @Test
     void getTaskReturnsNotFoundForExpiredTask() throws Exception {
         writeTasks(Map.of("expired", taskRow("expired", Instant.now().minusSeconds(13 * 60 * 60))));
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
 
         assertThatThrownBy(() -> taskState.getTask("expired"))
+                .isInstanceOfSatisfying(
+                        ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    void getTaskReturnsNotFoundForMalformedCreatedAtValues() throws Exception {
+        Map<String, Map<String, Object>> tasks = new LinkedHashMap<>();
+        tasks.put("numeric-created-at", taskRowWithCreatedAt("numeric-created-at", 123));
+        tasks.put("invalid-created-at", taskRowWithCreatedAt("invalid-created-at", "not-an-instant"));
+        writeTasks(tasks);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
+
+        assertThatThrownBy(() -> taskState.getTask("numeric-created-at"))
+                .isInstanceOfSatisfying(
+                        ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+        assertThatThrownBy(() -> taskState.getTask("invalid-created-at"))
                 .isInstanceOfSatisfying(
                         ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
@@ -75,11 +107,26 @@ class TaskStateTest {
                                 "createdAt", Instant.now().minusSeconds(60 * 60 * 24).toString())));
         objectMapper.writeValue(stateFile.toFile(), tasks);
 
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
         taskState.createTask(new CreateTaskRequest("new task", null));
 
         Map<String, Object> persisted = objectMapper.readValue(stateFile.toFile(), new TypeReference<>() {});
         assertThat(persisted).doesNotContainKey("old");
+        assertThat(persisted).hasSize(1);
+    }
+
+    @Test
+    void createTaskPrunesMalformedCreatedAtRows() throws Exception {
+        Map<String, Map<String, Object>> tasks = new LinkedHashMap<>();
+        tasks.put("numeric-created-at", taskRowWithCreatedAt("numeric-created-at", 123));
+        tasks.put("invalid-created-at", taskRowWithCreatedAt("invalid-created-at", "not-an-instant"));
+        writeTasks(tasks);
+
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
+        taskState.createTask(new CreateTaskRequest("new task", null));
+
+        Map<String, Map<String, Object>> persisted = readTasks();
+        assertThat(persisted).doesNotContainKeys("numeric-created-at", "invalid-created-at");
         assertThat(persisted).hasSize(1);
     }
 
@@ -93,7 +140,7 @@ class TaskStateTest {
         }
         writeTasks(tasks);
 
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
         Map<String, Object> created = taskState.createTask(new CreateTaskRequest("newest", null));
 
         Map<String, Map<String, Object>> persisted = readTasks();
@@ -103,8 +150,52 @@ class TaskStateTest {
     }
 
     @Test
+    void getTaskWrapsStateReadFailureAsInternalServerError() throws Exception {
+        Files.createDirectory(tempDir.resolve("tasks.json"));
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
+
+        assertThatThrownBy(() -> taskState.getTask("task-1"))
+                .isInstanceOfSatisfying(
+                        ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR));
+    }
+
+    @Test
+    void createTaskWrapsStateWriteFailureAsInternalServerError() throws Exception {
+        Path blockedStateDir = tempDir.resolve("state-as-file");
+        Files.writeString(blockedStateDir, "not a directory");
+        TaskState taskState = TaskState.forStateDir(objectMapper, blockedStateDir);
+
+        assertThatThrownBy(() -> taskState.createTask(new CreateTaskRequest("blocked", null)))
+                .isInstanceOfSatisfying(
+                        ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR));
+    }
+
+    @Test
+    void createTaskFallsBackWhenAtomicMoveIsUnsupported() throws Exception {
+        AtomicBoolean attemptedAtomicMove = new AtomicBoolean(false);
+        TaskState taskState = TaskState.forStateDir(
+                objectMapper,
+                tempDir,
+                (source, target, options) -> {
+                    if (Arrays.asList(options).contains(StandardCopyOption.ATOMIC_MOVE)) {
+                        attemptedAtomicMove.set(true);
+                        throw new AtomicMoveNotSupportedException(
+                                source.toString(), target.toString(), "test filesystem does not support atomic moves");
+                    }
+                    Files.move(source, target, options);
+                });
+
+        Map<String, Object> created = taskState.createTask(new CreateTaskRequest("fallback", null));
+
+        assertThat(attemptedAtomicMove).isTrue();
+        assertThat(readTasks()).containsKey((String) created.get("id"));
+    }
+
+    @Test
     void concurrentCreatesAndReadsDoNotLoseOrCorruptTasks() throws Exception {
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
         ExecutorService executor = Executors.newFixedThreadPool(8);
         List<Callable<Map<String, Object>>> operations = new ArrayList<>();
         for (int index = 0; index < 40; index++) {
@@ -131,7 +222,7 @@ class TaskStateTest {
 
     @Test
     void createTaskRejectsOversizedTitleAndPayload() {
-        TaskState taskState = new TaskState(objectMapper, tempDir);
+        TaskState taskState = TaskState.forStateDir(objectMapper, tempDir);
 
         assertThatThrownBy(() -> taskState.createTask(new CreateTaskRequest("x".repeat(201), null)))
                 .isInstanceOfSatisfying(
@@ -148,6 +239,11 @@ class TaskStateTest {
     private Map<String, Object> taskRow(String id, Instant createdAt) {
         return new LinkedHashMap<>(
                 Map.of("id", id, "title", id, "status", "created", "createdAt", createdAt.toString()));
+    }
+
+    private Map<String, Object> taskRowWithCreatedAt(String id, Object createdAt) {
+        return new LinkedHashMap<>(
+                Map.of("id", id, "title", id, "status", "created", "createdAt", createdAt));
     }
 
     private void writeTasks(Map<String, Map<String, Object>> tasks) throws Exception {

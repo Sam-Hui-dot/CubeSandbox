@@ -31,8 +31,9 @@ ENV PATH="${JAVA_HOME}/bin:${MAVEN_HOME}/bin:${PATH}"
 ENV MAVEN_OPTS="-Dmaven.repo.local=/workspace/.m2/repository"
 ENV SPRING_BOOT_JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75"
 
-RUN mkdir -p /workspace/java-springboot-web /workspace/.m2/repository && \
-    chown -R user:user /workspace && \
+RUN mkdir -p /workspace/java-springboot-web /workspace/.m2 /opt/maven-repository && \
+    ln -s /opt/maven-repository /workspace/.m2/repository && \
+    chown -R user:user /workspace /opt/maven-repository && \
     find /workspace -type d -exec chmod 0755 {} \; && \
     find /workspace -type f -exec chmod 0644 {} \;
 
@@ -51,22 +52,19 @@ RUN --mount=type=cache,id=java-springboot-maven,target=/tmp/maven-cache \
             mvn -B -Dmaven.artifact.threads=1 -Dmaven.wagon.http.retryHandler.count=5 \
                 -DskipTests dependency:go-offline; \
     fi && \
-    cp -a /tmp/maven-cache/. /workspace/.m2/repository/
+    cp -a /tmp/maven-cache/. /opt/maven-repository/
 
 COPY src ./src
-RUN --mount=type=cache,id=java-springboot-maven,target=/tmp/maven-cache \
-    --mount=type=secret,id=maven_settings,target=/run/secrets/maven-settings.xml \
-    cp -a /workspace/.m2/repository/. /tmp/maven-cache/ && \
+RUN --mount=type=secret,id=maven_settings,target=/run/secrets/maven-settings.xml \
     if test -s /run/secrets/maven-settings.xml; then \
-        MAVEN_OPTS="-Dmaven.repo.local=/tmp/maven-cache" \
+        MAVEN_OPTS="-Dmaven.repo.local=/opt/maven-repository" \
             mvn -s /run/secrets/maven-settings.xml -B verify; \
     else \
-        MAVEN_OPTS="-Dmaven.repo.local=/tmp/maven-cache" mvn -B verify; \
+        MAVEN_OPTS="-Dmaven.repo.local=/opt/maven-repository" mvn -B verify; \
     fi && \
-    cp -a /tmp/maven-cache/. /workspace/.m2/repository/ && \
     rm -rf target
 
-RUN chown -R user:user /workspace && \
+RUN chown -R user:user /workspace /opt/maven-repository && \
     touch /var/log/envd.log && \
     chown user:user /var/log/envd.log && \
     find /workspace -type d -exec chmod 0755 {} \; && \

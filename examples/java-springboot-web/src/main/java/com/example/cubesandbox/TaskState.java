@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -15,7 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -34,19 +34,25 @@ public class TaskState {
     private final ObjectMapper objectMapper;
     private final Path stateDir;
     private final Path stateFile;
+    private StateFileMover stateFileMover = Files::move;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 
-    @Autowired
     public TaskState(
             ObjectMapper objectMapper,
             @Value("${cubesandbox.task-state-dir:/tmp/cubesandbox-spring/state}") String stateDir) {
-        this(objectMapper, Path.of(stateDir));
+        this.objectMapper = objectMapper;
+        this.stateDir = Path.of(stateDir);
+        this.stateFile = this.stateDir.resolve(STATE_FILE_NAME);
     }
 
-    TaskState(ObjectMapper objectMapper, Path stateDir) {
-        this.objectMapper = objectMapper;
-        this.stateDir = stateDir;
-        this.stateFile = stateDir.resolve(STATE_FILE_NAME);
+    static TaskState forStateDir(ObjectMapper objectMapper, Path stateDir) {
+        return new TaskState(objectMapper, stateDir.toString());
+    }
+
+    static TaskState forStateDir(ObjectMapper objectMapper, Path stateDir, StateFileMover stateFileMover) {
+        TaskState taskState = forStateDir(objectMapper, stateDir);
+        taskState.stateFileMover = stateFileMover;
+        return taskState;
     }
 
     public Map<String, Object> createTask(CreateTaskRequest request) {
@@ -64,7 +70,7 @@ public class TaskState {
             task.put("status", "created");
             task.put("createdAt", now.toString());
             task.put("payload", payload);
-            task.put("stateFile", stateFile.toString());
+            task.put("persisted", true);
             tasks.put(id, task);
             writeTasks(tasks);
             return task;
@@ -148,16 +154,21 @@ public class TaskState {
             Path tempFile = Files.createTempFile(stateDir, "tasks", ".json.tmp");
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempFile.toFile(), tasks);
             try {
-                Files.move(
+                stateFileMover.move(
                         tempFile,
                         stateFile,
                         StandardCopyOption.ATOMIC_MOVE,
                         StandardCopyOption.REPLACE_EXISTING);
             } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tempFile, stateFile, StandardCopyOption.REPLACE_EXISTING);
+                stateFileMover.move(tempFile, stateFile, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to write task state", e);
         }
+    }
+
+    @FunctionalInterface
+    interface StateFileMover {
+        void move(Path source, Path target, CopyOption... options) throws IOException;
     }
 }
