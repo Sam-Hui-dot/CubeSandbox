@@ -23,10 +23,10 @@ project.
 
 | Component | Version |
 |---|---|
-| OpenCode CLI | `opencode-ai` pinned by `OPENCODE_VERSION` build arg |
-| Node.js | 22, installed through NodeSource |
+| OpenCode CLI | `opencode-ai` 1.17.13, pinned by `OPENCODE_VERSION` |
+| Node.js | 22.23.1 official archive, verified with SHA-256 |
 | CubeSandbox base image | `ghcr.io/tencentcloud/cubesandbox-base:2026.16` |
-| Host SDKs | `e2b>=2.4.1`, `cubesandbox>=0.3.0` |
+| Host SDKs | `e2b==2.7.0`, `cubesandbox==0.3.0` |
 | CubeSandbox platform | `>=0.3.0` for pause/resume; CubeEgress required for header injection |
 
 OpenCode's documented non-interactive mode is `opencode run [message..]`. The
@@ -140,11 +140,26 @@ The script seeds a small Python project, runs OpenCode, then verifies:
 python3 resume_opencode.py
 ```
 
-The first turn writes `plan.md`, pauses the sandbox, reconnects to the same
-sandbox, verifies `/workspace` and OpenCode's state directory survived, then
-continues the task and checks `OPENCODE_RESUME_OK`.
+The first turn writes `plan.md`. `sandbox.pause()` snapshots the VM and root
+filesystem; the script reconnects to the same sandbox, verifies `/workspace`
+and OpenCode's state directory survived, then continues the task and checks
+`OPENCODE_RESUME_OK`.
 
-### 6. Restrict egress and inject credentials
+### 6. Create a checkpoint, fork, and continue
+
+```bash
+python3 checkpoint_fork_opencode.py
+```
+
+This workflow runs OpenCode in a source sandbox, creates an explicit snapshot
+after turn 1, starts a new sandbox with `template=snapshot_id`, and continues
+the same OpenCode session in the fork. It proves the workspace and OpenCode
+state were inherited while the source and fork remain independent, then deletes
+the temporary snapshot. This checkpoint/fork demo uses the same direct provider
+environment style as the basic run/resume demos; use `network_policy.py` for
+the default-deny CubeEgress credential-injection path.
+
+### 7. Restrict egress and inject credentials
 
 ```bash
 python3 network_policy.py
@@ -155,7 +170,10 @@ The strict path uses the native `cubesandbox` SDK:
 - `allow_internet_access=False` makes egress default-deny.
 - A CubeEgress rule allows only the configured LLM host.
 - `Inject` attaches the real provider credential as an HTTP header.
-- The sandbox process receives only a placeholder key.
+- The VM's global environment contains no provider key.
+- The OpenCode command receives only a placeholder key.
+- The script fails if either secret invariant is violated or an unrelated host
+  is reachable.
 
 Set `OPENCODE_LLM_HOST` when the LLM API host differs from the provider
 default, especially when using `OPENCODE_BASE_URL` or a provider-specific
@@ -207,21 +225,22 @@ Rule(
 - OpenCode still needs a real LLM provider key for live runs.
 - `--auto` lets OpenCode perform edits and commands without interactive approval;
   use it only inside the isolated sandbox boundary.
-- Direct env injection in `run_opencode.py` is convenient for local validation
-  and known secret values are redacted from failure output, but shared clusters
-  should prefer `network_policy.py`.
+- Direct env injection in `run_opencode.py` is convenient for local validation;
+  only the active provider key is forwarded and known secret values are
+  redacted from failure output. Shared clusters should prefer
+  `network_policy.py` or `checkpoint_fork_opencode.py`.
 - Custom provider support depends on OpenCode's provider configuration and the
   target endpoint's compatibility with the selected model.
-- The example Dockerfile uses the NodeSource setup script for readability.
-  Production images should pin and verify Node.js package sources or mirror the
-  artifacts internally.
+- The example pins the Node.js archive and verifies its official SHA-256 before
+  extraction. Update `NODE_VERSION` and `NODE_SHA256` together after checking
+  Node.js `SHASUMS256.txt`.
 
 ## Validation
 
 From `examples/opencode-integration`:
 
 ```bash
-python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py network_policy.py
+python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py checkpoint_fork_opencode.py network_policy.py
 python3 -m unittest discover . -p 'test_*.py'
 bash -n build-template.sh
 docker build --platform linux/amd64 -t opencode-cube:verify .
@@ -233,6 +252,7 @@ Live CubeSandbox validation:
 ```bash
 python3 run_opencode.py
 python3 resume_opencode.py
+python3 checkpoint_fork_opencode.py
 python3 network_policy.py --skip-agent
 python3 network_policy.py
 ```

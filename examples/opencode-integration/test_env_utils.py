@@ -53,18 +53,30 @@ class EnvUtilsTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", result)
         self.assertEqual(result["HTTPS_PROXY"], "http://proxy.local:8080")
 
-    def test_build_env_includes_provider_keys_by_default(self) -> None:
+    def test_build_env_includes_only_active_provider_key_by_default(self) -> None:
+        env = {
+            "OPENCODE_MODEL": "openai/gpt-4.1-mini",
+            "OPENAI_API_KEY": "sk-openai",
+            "ANTHROPIC_API_KEY": "sk-anthropic-must-not-leak",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            result = env_utils.build_opencode_env()
+        self.assertEqual(result["OPENAI_API_KEY"], "sk-openai")
+        self.assertNotIn("ANTHROPIC_API_KEY", result)
+
+    def test_optional_preserves_empty_string(self) -> None:
+        with patch.dict(os.environ, {"OPENCODE_DISABLE_AUTOUPDATE": ""}, clear=True):
+            self.assertEqual(env_utils.optional("OPENCODE_DISABLE_AUTOUPDATE", "1"), "")
+
+    def test_build_env_uses_official_autoupdate_variable_name(self) -> None:
         env = {
             "OPENCODE_MODEL": "openai/gpt-4.1-mini",
             "OPENAI_API_KEY": "sk-openai",
         }
         with patch.dict(os.environ, env, clear=True):
             result = env_utils.build_opencode_env()
-        self.assertEqual(result["OPENAI_API_KEY"], "sk-openai")
-
-    def test_optional_preserves_empty_string(self) -> None:
-        with patch.dict(os.environ, {"OPENCODE_DISABLE_AUTO_UPDATE": ""}, clear=True):
-            self.assertEqual(env_utils.optional("OPENCODE_DISABLE_AUTO_UPDATE", "1"), "")
+        self.assertEqual(result["OPENCODE_DISABLE_AUTOUPDATE"], "1")
+        self.assertNotIn("OPENCODE_DISABLE_AUTO_UPDATE", result)
 
     def test_llm_host_prefers_base_url(self) -> None:
         env = {

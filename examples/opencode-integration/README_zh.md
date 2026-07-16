@@ -18,9 +18,13 @@ opencode-integration/
 |-- _opencode_common.py     # 沙箱命令 helper
 |-- run_opencode.py         # 一次性编码任务 demo
 |-- resume_opencode.py      # pause/resume 会话保持 demo
+|-- checkpoint_fork_opencode.py # checkpoint、fork、继续任务 demo
 |-- network_policy.py       # 默认拒绝出网 + CubeEgress 注入 demo
 |-- test_env_utils.py       # 配置处理单测
 |-- test_commands.py        # 命令构造单测
+|-- test_network_policy.py  # 安全策略断言测试
+|-- test_opencode_common.py # 沙箱 helper 测试
+|-- test_workflows.py       # 完整编排流程 mock 测试
 `-- requirements.txt        # 宿主端 Python 依赖
 ```
 
@@ -40,8 +44,8 @@ docker build --platform linux/amd64 -t <registry>/opencode-cube:latest .
 docker push <registry>/opencode-cube:latest
 ```
 
-镜像基于 `ghcr.io/tencentcloud/cubesandbox-base:2026.16`，安装 Node.js 22
-和 `opencode-ai`。
+镜像基于 `ghcr.io/tencentcloud/cubesandbox-base:2026.16`，安装经过 SHA-256
+校验的 Node.js 22.23.1 和 OpenCode 1.17.13。
 
 ## 2. 注册 CubeSandbox 模板
 
@@ -114,18 +118,33 @@ python3 run_opencode.py
 python3 resume_opencode.py
 ```
 
-第一轮让 OpenCode 写入 `plan.md`，随后暂停沙箱；脚本再连接同一个 sandbox ID，
-验证 `/workspace` 和 OpenCode 状态目录仍存在，然后继续任务并检查
-`OPENCODE_RESUME_OK`。
+第一轮让 OpenCode 写入 `plan.md`；`sandbox.pause()` 会保存 VM 和根文件系统快照。
+脚本再连接同一个 sandbox ID，验证 `/workspace` 和 OpenCode 状态目录仍存在，
+然后继续任务并检查 `OPENCODE_RESUME_OK`。
 
-## 6. 受限出网模式
+## 6. 创建可复用 checkpoint 并 fork 任务
+
+```bash
+python3 checkpoint_fork_opencode.py
+```
+
+该流程在 source sandbox 中运行 OpenCode，创建显式 checkpoint，再从该 checkpoint
+启动一个新 sandbox，并在 fork 中继续同一个 OpenCode 会话。脚本验证 workspace 和
+OpenCode 状态已继承、sandbox ID 相互独立、测试通过且结果包含 `OPENCODE_FORK_OK`，
+最后清理两个 sandbox 和临时 checkpoint。它使用与 `run_opencode.py`、
+`resume_opencode.py` 相同的直接 provider 环境变量方式；默认拒绝出网与 CubeEgress
+凭证注入路径由 `network_policy.py` 验证。
+
+## 7. 受限出网模式
 
 ```bash
 python3 network_policy.py
 ```
 
 该路径使用原生 `cubesandbox` SDK 创建沙箱：默认拒绝出网，只允许配置的 LLM host。
-真实 provider key 由 CubeEgress 在链路上注入 HTTP header，沙箱里只能看到占位值。
+真实 provider key 由 CubeEgress 在链路上注入 HTTP header；VM 全局环境中必须没有
+该 key，OpenCode 命令环境中只能有占位值。如果任一条件不满足，或
+`example.com` 可以访问，脚本都会失败。
 
 自定义端点请设置：
 
@@ -142,7 +161,7 @@ python3 network_policy.py --skip-agent
 ## 验证
 
 ```bash
-python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py network_policy.py
+python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py checkpoint_fork_opencode.py network_policy.py
 python3 -m unittest discover . -p 'test_*.py'
 bash -n build-template.sh
 ```
@@ -165,11 +184,11 @@ docker run --rm opencode-cube:verify python3 --version
 | OpenCode 鉴权失败 | provider key 名称不匹配 | `openai/*` 对应 `OPENAI_API_KEY` |
 | 模板 probe 失败 | envd 端口不可达 | 使用 CubeSandbox base entrypoint 时配置 `--probe 49983 --probe-path /health` |
 | `403 Forbidden - CubeEgress` | 严格出网模式阻断了目标 host | 设置真实的 `OPENCODE_LLM_HOST` |
-| 需要生产级供应链加固 | 示例 Dockerfile 为了可读性使用 NodeSource setup script | 生产镜像建议 pin 并校验 Node.js 包来源，或使用内部镜像源 |
+| Node.js 下载校验失败 | 上游归档发生变化或下载内容损坏 | 更新 `NODE_SHA256` 前先对照 Node.js `SHASUMS256.txt` 验证 `NODE_VERSION` |
 
 ## 安全说明
 
 - Docker 镜像不包含任何 provider secret。
-- `run_opencode.py` 和 `resume_opencode.py` 只在单次命令环境中注入 key，并会在失败输出中脱敏已知 secret，适合本地验证。
-- `network_policy.py` 是共享集群推荐路径：默认拒绝出网 + CubeEgress header 注入。
+- `run_opencode.py` 和 `resume_opencode.py` 只在单次命令环境中注入当前 provider 的 key，并会在失败输出中脱敏已知 secret，适合本地验证。
+- `network_policy.py` 和 `checkpoint_fork_opencode.py` 是共享集群推荐路径：默认拒绝出网 + CubeEgress header 注入。
 - 不要提交 `.env`。

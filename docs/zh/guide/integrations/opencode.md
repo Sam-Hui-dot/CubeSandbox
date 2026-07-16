@@ -22,10 +22,10 @@ lang: zh-CN
 
 | 组件 | 版本 |
 |---|---|
-| OpenCode CLI | 通过 `OPENCODE_VERSION` build arg 固定的 `opencode-ai` |
-| Node.js | 22，通过 NodeSource 安装 |
+| OpenCode CLI | 通过 `OPENCODE_VERSION` 固定的 `opencode-ai` 1.17.13 |
+| Node.js | Node.js 官方 22.23.1 归档，经过 SHA-256 校验 |
 | CubeSandbox 基础镜像 | `ghcr.io/tencentcloud/cubesandbox-base:2026.16` |
-| 宿主端 SDK | `e2b>=2.4.1`、`cubesandbox>=0.3.0` |
+| 宿主端 SDK | `e2b==2.7.0`、`cubesandbox==0.3.0` |
 | CubeSandbox 平台 | pause/resume 需要 `>=0.3.0`；header 注入需要 CubeEgress |
 
 OpenCode 官方的非交互模式是 `opencode run [message..]`。本示例使用：
@@ -134,10 +134,23 @@ python3 run_opencode.py
 python3 resume_opencode.py
 ```
 
-第一轮写入 `plan.md`，暂停沙箱，再连接同一个 sandbox；脚本验证 `/workspace`
-和 OpenCode 状态目录仍存在，然后继续任务并检查 `OPENCODE_RESUME_OK`。
+第一轮写入 `plan.md`；`sandbox.pause()` 会保存 VM 和根文件系统快照。脚本再连接
+同一个 sandbox，验证 `/workspace` 和 OpenCode 状态目录仍存在，然后继续任务并
+检查 `OPENCODE_RESUME_OK`。
 
-### 6. 限制出网并注入凭证
+### 6. 创建 checkpoint、fork 并继续任务
+
+```bash
+python3 checkpoint_fork_opencode.py
+```
+
+该流程在 source sandbox 中运行 OpenCode，在第一轮后创建显式 snapshot，使用
+`template=snapshot_id` 启动新 sandbox，并在 fork 中继续同一个 OpenCode 会话。
+它证明 workspace 和 OpenCode 状态已继承、source 与 fork 相互独立，最后删除临时
+snapshot。该 checkpoint/fork demo 使用与基础 run/resume demo 相同的直接 provider
+环境变量方式；默认拒绝出网与 CubeEgress 凭证注入路径由 `network_policy.py` 验证。
+
+### 7. 限制出网并注入凭证
 
 ```bash
 python3 network_policy.py
@@ -148,7 +161,9 @@ python3 network_policy.py
 - `allow_internet_access=False` 将出网设为默认拒绝。
 - CubeEgress rule 只允许配置的 LLM host。
 - `Inject` 在 HTTP header 中注入真实 provider 凭证。
-- 沙箱进程只能看到占位 key。
+- VM 全局环境中没有 provider key。
+- OpenCode 命令环境中只能看到占位 key。
+- 如果任一 secret 条件不满足，或无关 host 可以访问，脚本会直接失败。
 
 当 LLM API host 与 provider 默认值不一致时（尤其使用 `OPENCODE_BASE_URL`
 或 provider-specific `<PROVIDER>_BASE_URL` 时），请设置 `OPENCODE_LLM_HOST`：
@@ -198,18 +213,19 @@ Rule(
 
 - live 运行仍需要真实 LLM provider key。
 - `--auto` 会让 OpenCode 无需交互确认即可编辑和执行命令，应放在隔离沙箱内使用。
-- `run_opencode.py` 的直接 env 注入适合本地验证，并会在失败输出中脱敏已知
-  secret；共享集群建议使用 `network_policy.py`。
+- `run_opencode.py` 的直接 env 注入适合本地验证；它只传递当前 provider 的 key，
+  并会在失败输出中脱敏已知 secret。共享集群建议使用 `network_policy.py` 或
+  `checkpoint_fork_opencode.py`。
 - 自定义 provider 取决于 OpenCode provider 配置以及目标端点对所选模型的兼容性。
-- 示例 Dockerfile 为了可读性使用 NodeSource setup script；生产镜像建议 pin
-  并校验 Node.js 包来源，或使用内部镜像源。
+- 示例固定 Node.js 官方归档并在解压前校验 SHA-256。更新时应对照 Node.js
+  `SHASUMS256.txt` 同时修改 `NODE_VERSION` 和 `NODE_SHA256`。
 
 ## 验证
 
 在 `examples/opencode-integration` 下执行：
 
 ```bash
-python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py network_policy.py
+python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py checkpoint_fork_opencode.py network_policy.py
 python3 -m unittest discover . -p 'test_*.py'
 bash -n build-template.sh
 docker build --platform linux/amd64 -t opencode-cube:verify .
@@ -221,6 +237,7 @@ live CubeSandbox 验证：
 ```bash
 python3 run_opencode.py
 python3 resume_opencode.py
+python3 checkpoint_fork_opencode.py
 python3 network_policy.py --skip-agent
 python3 network_policy.py
 ```

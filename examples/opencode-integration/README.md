@@ -18,9 +18,13 @@ opencode-integration/
 |-- _opencode_common.py     # Sandbox command helpers
 |-- run_opencode.py         # One-shot coding-agent demo
 |-- resume_opencode.py      # pause/resume session persistence demo
+|-- checkpoint_fork_opencode.py # checkpoint, fork, and continue demo
 |-- network_policy.py       # Default-deny egress + CubeEgress injection demo
 |-- test_env_utils.py       # Unit tests for config handling
 |-- test_commands.py        # Unit tests for command construction
+|-- test_network_policy.py  # Security-policy assertion tests
+|-- test_opencode_common.py # Sandbox helper tests
+|-- test_workflows.py       # Mocked end-to-end orchestration tests
 `-- requirements.txt        # Host-side Python dependencies
 ```
 
@@ -40,8 +44,8 @@ docker build --platform linux/amd64 -t <registry>/opencode-cube:latest .
 docker push <registry>/opencode-cube:latest
 ```
 
-The image installs Node.js 22 and `opencode-ai` on top of
-`ghcr.io/tencentcloud/cubesandbox-base:2026.16`.
+The image installs checksum-verified Node.js 22.23.1 and OpenCode 1.17.13 on top
+of `ghcr.io/tencentcloud/cubesandbox-base:2026.16`.
 
 ## 2. Register a CubeSandbox template
 
@@ -118,11 +122,26 @@ that `result.md` contains `OPENCODE_CUBE_OK`.
 python3 resume_opencode.py
 ```
 
-The first turn asks OpenCode to write `plan.md`, pauses the sandbox, reconnects
-to the same sandbox ID, verifies `/workspace` and OpenCode state survived, then
-continues the task and checks for `OPENCODE_RESUME_OK`.
+The first turn asks OpenCode to write `plan.md`. `sandbox.pause()` snapshots the
+VM and root filesystem; the script reconnects to the same sandbox ID, verifies
+`/workspace` and OpenCode state survived, then continues the task and checks for
+`OPENCODE_RESUME_OK`.
 
-## 6. Run with restricted egress
+## 6. Create a reusable checkpoint and fork the task
+
+```bash
+python3 checkpoint_fork_opencode.py
+```
+
+This workflow runs OpenCode in a source sandbox, creates an explicit checkpoint,
+starts a new sandbox from that checkpoint, and continues the same OpenCode
+session in the fork. It verifies inherited workspace and OpenCode state,
+independent sandbox IDs, passing tests, and `OPENCODE_FORK_OK`, then deletes
+both sandboxes and the temporary checkpoint. It uses the same direct provider
+environment style as `run_opencode.py` and `resume_opencode.py`; use
+`network_policy.py` for the default-deny CubeEgress credential-injection path.
+
+## 7. Run with restricted egress
 
 ```bash
 python3 network_policy.py
@@ -130,8 +149,10 @@ python3 network_policy.py
 
 This path uses the native `cubesandbox` SDK to create the sandbox with
 default-deny egress and an allow rule for only the configured LLM host. The
-provider key is injected by CubeEgress as an HTTP header, while the sandbox sees
-only a placeholder environment value.
+provider key is injected by CubeEgress as an HTTP header. The global VM
+environment must not contain the key, and the OpenCode command receives only a
+placeholder. The script fails if either invariant is violated or if
+`example.com` is reachable.
 
 Set `OPENCODE_LLM_HOST` when using a custom endpoint:
 
@@ -148,7 +169,7 @@ python3 network_policy.py --skip-agent
 ## Validation
 
 ```bash
-python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py network_policy.py
+python3 -m py_compile env_utils.py _opencode_common.py run_opencode.py resume_opencode.py checkpoint_fork_opencode.py network_policy.py
 python3 -m unittest discover . -p 'test_*.py'
 bash -n build-template.sh
 ```
@@ -171,14 +192,14 @@ docker run --rm opencode-cube:verify python3 --version
 | OpenCode cannot authenticate | Wrong provider key name | Match the prefix: `openai/*` needs `OPENAI_API_KEY` |
 | Template probe fails | The envd port is not reachable | Use `--probe 49983 --probe-path /health` with the CubeSandbox base entrypoint |
 | `403 Forbidden - CubeEgress` | Strict egress blocked a host | Set `OPENCODE_LLM_HOST` to the real provider host |
-| Supply-chain hardening required | The example Dockerfile uses the NodeSource setup script for readability | Pin and verify Node.js packages or mirror the artifacts in production pipelines |
+| Node.js download checksum fails | The upstream archive changed or the download is corrupt | Verify `NODE_VERSION` against Node.js `SHASUMS256.txt` before updating `NODE_SHA256` |
 
 ## Security notes
 
 - The Docker image never contains provider secrets.
-- `run_opencode.py` and `resume_opencode.py` inject the provider key only for
-  the command and redact known secret values from failure output. This is
-  convenient for local validation but leaves egress open.
-- `network_policy.py` is the recommended shared-cluster pattern: default-deny
-  egress plus CubeEgress header injection.
+- `run_opencode.py` and `resume_opencode.py` inject only the active provider's
+  key for the command and redact known secret values from failure output. This
+  is convenient for local validation but leaves egress open.
+- `network_policy.py` and `checkpoint_fork_opencode.py` are the recommended
+  shared-cluster patterns: default-deny egress plus CubeEgress header injection.
 - Do not commit `.env`.

@@ -98,22 +98,46 @@ def create_sandbox(template_id: str, rules: list[Rule], timeout: int) -> Sandbox
     )
 
 
-def show_key_not_in_vm(sandbox: Sandbox, key_name: str) -> None:
+def verify_key_not_in_vm(sandbox: Sandbox, key_name: str) -> None:
     command = f"printenv {shlex.quote(key_name)} || echo '<unset>'"
     result = run_command(sandbox, command, timeout=30)
     ensure_success(result, "read provider key inside sandbox")
     value = getattr(result, "stdout", "").strip()
-    print(f"In-VM {key_name}: {value!r} (expected placeholder, not the real key)")
+    if value != "<unset>":
+        raise SystemExit(
+            f"Security check failed: {key_name} exists in the sandbox's global environment."
+        )
+    print(f"In-VM global {key_name}: '<unset>' (real secret stays in CubeEgress)")
 
 
-def show_non_llm_blocked(sandbox: Sandbox) -> None:
+def verify_placeholder_env(
+    sandbox: Sandbox, key_name: str, envs: dict[str, str]
+) -> None:
+    command = f"printenv {shlex.quote(key_name)}"
+    result = run_command(sandbox, command, envs=envs, timeout=30)
+    ensure_success(result, "verify provider placeholder inside the agent command")
+    value = getattr(result, "stdout", "").strip()
+    if value != PLACEHOLDER_KEY:
+        raise SystemExit(
+            f"Security check failed: {key_name} was not replaced by the CubeEgress placeholder."
+        )
+    print(f"Agent command {key_name}: '<placeholder>'")
+
+
+def verify_non_llm_blocked(sandbox: Sandbox) -> None:
     command = (
         "curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://example.com "
         "|| echo blocked"
     )
     result = run_command(sandbox, command, timeout=30)
     status = getattr(result, "stdout", "").strip()
-    print(f"Non-LLM host example.com: {status or 'blocked'}")
+    blocked = status == "403" or status.endswith("blocked")
+    if not blocked:
+        raise SystemExit(
+            "Security check failed: non-LLM host example.com was reachable "
+            f"(curl status {status or '<empty>'})."
+        )
+    print(f"Non-LLM host example.com: {status or 'blocked'} (blocked as expected)")
 
 
 def verify_agent_output(sandbox: Sandbox, workspace: str) -> None:
@@ -171,8 +195,9 @@ def main() -> int:
         sandbox_id = sandbox_identifier(sandbox)
         print(f"Sandbox ready: {sandbox_id}\n")
 
-        show_key_not_in_vm(sandbox, key_name)
-        show_non_llm_blocked(sandbox)
+        verify_key_not_in_vm(sandbox, key_name)
+        verify_placeholder_env(sandbox, key_name, envs)
+        verify_non_llm_blocked(sandbox)
         seed_workspace(sandbox, args.workspace)
 
         if args.skip_agent:

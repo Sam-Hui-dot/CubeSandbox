@@ -29,10 +29,6 @@ PROVIDER_DEFAULT_HOST = {
 }
 
 PASSTHROUGH_ENV_NAMES = (
-    "ANTHROPIC_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -134,15 +130,17 @@ def opencode_llm_host(provider: str | None = None) -> str:
 def build_opencode_env(include_secrets: bool = True) -> dict[str, str]:
     provider = opencode_provider()
     env = {
-        "OPENCODE_DISABLE_AUTO_UPDATE": optional("OPENCODE_DISABLE_AUTO_UPDATE", "1"),
+        "OPENCODE_DISABLE_AUTOUPDATE": optional("OPENCODE_DISABLE_AUTOUPDATE", "1"),
     }
     for name in PASSTHROUGH_ENV_NAMES:
         value = os.environ.get(name)
-        if not value:
-            continue
-        if name.endswith("_API_KEY") and not include_secrets:
-            continue
-        env[name] = value
+        if value:
+            env[name] = value
+    if include_secrets:
+        key_name = provider_key_name(provider)
+        key_value = os.environ.get(key_name)
+        if key_value:
+            env[key_name] = key_value
     return env
 
 
