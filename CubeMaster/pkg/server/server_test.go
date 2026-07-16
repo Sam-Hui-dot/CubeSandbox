@@ -24,3 +24,20 @@ func TestRegisterHandlersIncludesCADownloadRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestRegisterHandlersIncludesTerminalWebSocketRoute(t *testing.T) {
+	s := &internalHttp{router: mux.NewRouter()}
+	s.registerHandlers()
+
+	request := httptest.NewRequest(http.MethodGet, "/cube/sandbox/terminal", nil)
+	var match mux.RouteMatch
+	if !s.router.Match(request, &match) {
+		t.Fatal("GET /cube/sandbox/terminal did not match any route")
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/cube/sandbox/terminal", nil)
+	match = mux.RouteMatch{}
+	if s.router.Match(request, &match) {
+		t.Fatal("POST /cube/sandbox/terminal unexpectedly matched the WebSocket route")
+	}
+}

@@ -12,7 +12,16 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { Maximize2, Minimize2, RotateCcw, Terminal, X } from 'lucide-react';
+import {
+  ClipboardCopy,
+  Eraser,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  ScanLine,
+  Terminal,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { sandboxApi } from '@/api/client';
 import type { SandboxContainer } from '@/api/client';
@@ -54,6 +63,7 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
   const [status, setStatus] = useState<ConnectionState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [execId, setExecId] = useState<string | null>(null);
   const [containers, setContainers] = useState<SandboxContainer[]>([]);
   const [selectedContainerId, setSelectedContainerId] = useState<string | undefined>();
   const [sessionKey, setSessionKey] = useState(0);
@@ -199,6 +209,7 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
       setStatus('connecting');
       setError(null);
       setSessionId(null);
+      setExecId(null);
       term.writeln(t('terminal.connecting'));
       try {
         fitTerminal();
@@ -222,7 +233,11 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
         if (mockTerminal) {
           setStatus('connected');
           setSessionId(`mock-${sandboxId}`);
-          term.writeln(t('terminal.started', { pid: 'mock' }));
+          setExecId('mock-exec');
+          term.writeln(t('terminal.started', {
+            container: ticket.containerID ?? containerId ?? sandboxId,
+            execId: 'mock-exec',
+          }));
           term.writeln(
             `Mock terminal attached to ${ticket.containerID ?? containerId ?? sandboxId}.`,
           );
@@ -234,7 +249,6 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
 
         ws.onopen = () => {
           if (disposed) return;
-          setStatus('connected');
           ws.send(terminalResizeFrame(term.rows, term.cols));
         };
         ws.onmessage = (event) => {
@@ -243,6 +257,8 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
             setStatus,
             setError,
             setSessionId,
+            setExecId,
+            containerId: ticket.containerID ?? containerId ?? sandboxId,
             t: (key, options) => t(key as any, options as any),
           });
         };
@@ -336,6 +352,9 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
   };
 
   const changeContainer = (containerId: string) => {
+    termRef.current?.writeln(`\r\n${t('terminal.container.switching', { id: containerId })}`);
+    setStatus('connecting');
+    setError(null);
     setSelectedContainerId(containerId);
     wsRef.current?.close();
     setSessionKey((value) => value + 1);
@@ -348,6 +367,17 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
     if (term && ws?.readyState === WebSocket.OPEN) {
       ws.send(terminalResizeFrame(term.rows, term.cols));
     }
+  };
+
+  const copySelection = () => {
+    const selection = termRef.current?.getSelection() ?? '';
+    if (selection) void navigator.clipboard?.writeText(selection);
+    termRef.current?.focus();
+  };
+
+  const clearTerminal = () => {
+    termRef.current?.clear();
+    termRef.current?.focus();
   };
 
   const toggleMaximized = () => {
@@ -398,10 +428,10 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
         <Dialog.Content
           ref={contentRef}
           className={cn(
-            'fixed z-50 flex min-h-[360px] min-w-[520px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] flex-col overflow-hidden rounded-lg border border-border/70 bg-card shadow-2xl',
+            'fixed z-50 flex min-h-0 min-w-0 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] flex-col overflow-hidden rounded-lg border border-border/70 bg-card shadow-2xl',
             minimized && 'pointer-events-none opacity-0',
             maximized
-              ? 'inset-4 h-auto w-auto resize-none'
+              ? 'inset-2 h-auto w-auto resize-none sm:inset-4'
               : 'resize',
           )}
           style={
@@ -423,7 +453,7 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
         >
           <div
             className={cn(
-              'flex items-center gap-3 border-b border-border/60 px-4 py-3',
+              'flex items-center gap-2 border-b border-border/60 px-3 py-2 sm:gap-3 sm:px-4 sm:py-3',
               maximized ? 'cursor-default' : 'cursor-move select-none',
             )}
             onPointerDown={startDrag}
@@ -448,7 +478,7 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
             <div className="flex items-center gap-1">
               {containers.length > 1 ? (
                 <select
-                  className="h-8 max-w-[220px] rounded-md border border-border/70 bg-background px-2 text-xs"
+                  className="h-8 max-w-[120px] rounded-md border border-border/70 bg-background px-2 text-xs sm:max-w-[220px]"
                   value={selectedContainerId ?? ''}
                   title={t('terminal.container.select')}
                   aria-label={t('terminal.container.select')}
@@ -461,6 +491,35 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
                   ))}
                 </select>
               ) : null}
+              <Button
+                size="icon"
+                variant="ghost"
+                title={t('terminal.actions.fit')}
+                aria-label={t('terminal.actions.fit')}
+                onClick={fit}
+              >
+                <ScanLine size={14} />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title={t('terminal.actions.copySelection')}
+                aria-label={t('terminal.actions.copySelection')}
+                onClick={copySelection}
+                className="hidden sm:inline-flex"
+              >
+                <ClipboardCopy size={14} />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                title={t('terminal.actions.clear')}
+                aria-label={t('terminal.actions.clear')}
+                onClick={clearTerminal}
+                className="hidden sm:inline-flex"
+              >
+                <Eraser size={14} />
+              </Button>
               <Button
                 size="icon"
                 variant="ghost"
@@ -491,16 +550,25 @@ export function SandboxTerminalDialog({ sandboxId, open, onOpenChange, restoreKe
               </Dialog.Close>
             </div>
           </div>
-          {error ? (
-            <div className="border-b border-cube-err/30 bg-cube-err/10 px-4 py-2 text-xs text-cube-err">
-              {error}
+          {error || status === 'closed' ? (
+            <div className="flex items-center justify-between gap-3 border-b border-cube-err/30 bg-cube-err/10 px-4 py-2 text-xs text-cube-err">
+              <span>{error ?? t('terminal.closedMessage')}</span>
+              <Button size="sm" variant="outline" onClick={reconnect}>
+                <RotateCcw size={13} />
+                {t('terminal.actions.reconnect')}
+              </Button>
             </div>
           ) : null}
           <div className="min-h-0 flex-1 bg-[#070b12] p-2">
             <div ref={setTerminalMount} className="h-full w-full overflow-hidden rounded-md" />
           </div>
-          <div className="flex items-center justify-between border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
-            <span>{t('terminal.session', { id: sessionId ?? '-' })}</span>
+          <div className="flex items-center justify-between gap-3 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground sm:px-4">
+            <span className="hidden truncate sm:inline">
+              {t('terminal.session', { id: compactId(sessionId) })}
+            </span>
+            <span className="hidden truncate md:inline">
+              {t('terminal.exec', { id: compactId(execId) })}
+            </span>
             <span className="truncate">
               {selectedContainerId
                 ? t('terminal.container.current', { id: selectedContainerId })
@@ -545,14 +613,8 @@ function initialTerminalFrame(): TerminalFrame {
   if (typeof window === 'undefined') {
     return { x: 120, y: 80, width: 1120, height: 760 };
   }
-  const width = Math.min(
-    1120,
-    Math.max(MIN_TERMINAL_WIDTH, window.innerWidth - TERMINAL_MARGIN * 2),
-  );
-  const height = Math.min(
-    760,
-    Math.max(MIN_TERMINAL_HEIGHT, window.innerHeight - TERMINAL_MARGIN * 2),
-  );
+  const width = Math.min(1120, Math.max(280, window.innerWidth - TERMINAL_MARGIN * 2));
+  const height = Math.min(760, Math.max(240, window.innerHeight - TERMINAL_MARGIN * 2));
   return {
     x: Math.max(TERMINAL_MARGIN, Math.round((window.innerWidth - width) / 2)),
     y: Math.max(TERMINAL_MARGIN, Math.round((window.innerHeight - height) / 2)),
@@ -563,10 +625,12 @@ function initialTerminalFrame(): TerminalFrame {
 
 function clampTerminalFrame(frame: TerminalFrame): TerminalFrame {
   if (typeof window === 'undefined') return frame;
-  const maxWidth = Math.max(MIN_TERMINAL_WIDTH, window.innerWidth - TERMINAL_MARGIN * 2);
-  const maxHeight = Math.max(MIN_TERMINAL_HEIGHT, window.innerHeight - TERMINAL_MARGIN * 2);
-  const width = Math.min(Math.max(frame.width, MIN_TERMINAL_WIDTH), maxWidth);
-  const height = Math.min(Math.max(frame.height, MIN_TERMINAL_HEIGHT), maxHeight);
+  const maxWidth = Math.max(280, window.innerWidth - TERMINAL_MARGIN * 2);
+  const maxHeight = Math.max(240, window.innerHeight - TERMINAL_MARGIN * 2);
+  const minWidth = Math.min(MIN_TERMINAL_WIDTH, maxWidth);
+  const minHeight = Math.min(MIN_TERMINAL_HEIGHT, maxHeight);
+  const width = Math.min(Math.max(frame.width, minWidth), maxWidth);
+  const height = Math.min(Math.max(frame.height, minHeight), maxHeight);
   return {
     x: Math.min(
       Math.max(frame.x, TERMINAL_MARGIN),
@@ -588,10 +652,12 @@ function handleServerMessage(
     setStatus: (status: ConnectionState) => void;
     setError: (message: string | null) => void;
     setSessionId: (sessionId: string | null) => void;
+    setExecId: (execId: string | null) => void;
+    containerId: string;
     t: (key: string, options?: Record<string, unknown>) => string;
   },
 ) {
-  const { setStatus, setError, setSessionId, t } = handlers;
+  const { setStatus, setError, setSessionId, setExecId, containerId, t } = handlers;
   let msg: TerminalServerMessage;
   try {
     msg = parseTerminalServerMessage(raw);
@@ -602,8 +668,14 @@ function handleServerMessage(
   }
   switch (msg.type) {
     case 'start':
+      setStatus('connected');
+      setError(null);
       setSessionId(typeof msg.sessionId === 'string' ? msg.sessionId : null);
-      term.writeln(t('terminal.started', { pid: typeof msg.pid === 'number' ? msg.pid : '-' }));
+      setExecId(typeof msg.execId === 'string' ? msg.execId : null);
+      term.writeln(t('terminal.started', {
+        container: containerId,
+        execId: compactId(typeof msg.execId === 'string' ? msg.execId : null),
+      }));
       break;
     case 'output':
       if (typeof msg.data === 'string') term.write(decodeBase64Bytes(msg.data));
@@ -644,4 +716,9 @@ function handleServerMessage(
     default:
       break;
   }
+}
+
+function compactId(value: string | null): string {
+  if (!value) return '-';
+  return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value;
 }

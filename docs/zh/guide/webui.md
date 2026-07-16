@@ -67,7 +67,29 @@ Dashboard 是一个静态前端，由 **控制节点** 上的 nginx 容器托管
 
 要停掉一个沙箱，去 **Sandboxes** 列表，找到对应行，点最右边的暂停 / 销毁按钮。
 
-### 3.3 配置 API Key（仅在开启鉴权时需要）
+### 3.3 打开交互式终端
+
+在 **Sandboxes** 列表或运行中沙箱的详情页点击 **Terminal**，即可打开浏览器内 Shell。沙箱包含多个运行中容器时，需要先选择目标容器。
+
+Dashboard 会先向 CubeAPI 申请一个短时、一次性的终端票据，再建立 WebSocket。经过鉴权的会话由 CubeAPI 转发至 CubeMaster 和 Cubelet，最终在所选容器中创建 containerd exec PTY。Cubelet 会再次校验容器确实属于该沙箱。
+
+终端支持 ANSI 输出、复制粘贴、滚动历史、窗口尺寸同步、重连、空闲超时和断连后的进程清理。窗口尺寸会经过 CubeShim 传递到 guest PTY，而不是只停留在 Web 层。
+
+终端当前以 `root` 用户启动；票据申请中的其他执行用户会被拒绝。
+
+浏览器不能在 WebSocket 升级时自由附加 `Authorization` 请求头，因此票据申请接口负责正常鉴权，WebSocket 只接受尚未使用且未过期的票据。CubeMaster 的内部终端端点还会拒绝浏览器来源的直连请求。
+
+CubeAPI 需要能够访问 `CUBE_MASTER_ADDR` 配置的 CubeMaster 内部 HTTP 地址。默认空闲超时为 30 分钟，可通过下面任一变量调整：
+
+```bash
+export CUBE_API_TERMINAL_IDLE_TIMEOUT_SECS=1800
+# 兼容别名：
+export TERMINAL_IDLE_TIMEOUT_SECS=1800
+```
+
+终端审计日志会记录 `sandbox_id`、`container_id`、`session_id`、`exec_id`、操作者、关闭原因和会话时长。
+
+### 3.4 配置 API Key（仅在开启鉴权时需要）
 
 如果你的部署开启了鉴权，Dashboard 必须在请求里带上 API Key，否则所有请求都会失败。
 

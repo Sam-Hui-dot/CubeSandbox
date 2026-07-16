@@ -19,11 +19,11 @@ pub struct AppState {
     /// Per-API-key rate limiter (token bucket).
     pub rate_limiter: Arc<DefaultKeyedRateLimiter<String>>,
 
-    /// Shared reqwest connection pool.
-    pub http_client: reqwest::Client,
-
     /// Shared business services built on top of CubeMaster.
     pub services: AppServices,
+
+    /// Shared HTTP client used by callbacks and AgentHub helpers.
+    pub http_client: reqwest::Client,
 
     /// Structured event logger (fan-out to all configured backends).
     pub logger: ArcLogger,
@@ -75,8 +75,8 @@ impl AppState {
 
         Self {
             rate_limiter,
-            http_client,
             services,
+            http_client,
             logger,
             config: Arc::new(config),
             agenthub_store,

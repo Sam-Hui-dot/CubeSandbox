@@ -31,15 +31,18 @@
     "title": "终端 {{id}}",
     "description": "沙箱交互式终端。",
     "connecting": "正在连接沙箱终端...",
-    "started": "终端已连接 (pid {{pid}})。",
+    "started": "已进入容器 {{container}} (exec {{execId}})。",
     "exited": "终端已退出，退出码 {{code}}。",
     "exitedWithError": "终端已退出: {{message}}",
     "idleTimeout": "终端因 {{seconds}} 秒无操作已关闭。",
     "session": "会话 {{id}}",
+    "exec": "进程 {{id}}",
+    "closedMessage": "终端连接已关闭。",
     "scrollback": "回滚 {{lines}} 行",
     "container": {
       "select": "选择终端容器",
-      "current": "容器 {{id}}"
+      "current": "容器 {{id}}",
+      "switching": "正在切换到容器 {{id}}..."
     },
     "status": {
       "idle": "空闲",
@@ -53,6 +56,8 @@
       "maximize": "最大化",
       "restore": "还原",
       "fit": "适配终端尺寸",
+      "copySelection": "复制选中内容",
+      "clear": "清屏",
       "reconnect": "重连",
       "close": "关闭"
     },

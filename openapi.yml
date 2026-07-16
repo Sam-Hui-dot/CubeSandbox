@@ -1271,6 +1271,7 @@ components:
           format: int32
           minimum: 0
         user:
+          description: Terminal execution user. Currently only `root` is supported.
           type:
           - string
           - 'null'

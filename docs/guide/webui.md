@@ -75,18 +75,21 @@ disabled because CubeAPI only opens terminals for instances that are currently
 `running`.
 
 The Dashboard asks CubeAPI for a short-lived, one-time terminal ticket, then
-upgrades to a WebSocket that bridges browser input/output to envd's PTY process
-API inside the sandbox.
+upgrades to a WebSocket. CubeAPI relays the authenticated session through
+CubeMaster and Cubelet to a containerd exec process in the selected container.
 
 The terminal supports:
 
 - ANSI output, cursor control, copy/paste, and scrollback through xterm.js
 - stdin forwarding over WebSocket text frames with UTF-8-safe base64 payloads
-- terminal window resize propagation to envd PTY size updates
+- terminal window resize propagation through CubeShim to the guest PTY
 - running-container selection when sandbox detail exposes multiple containers
 - reconnect and fit controls in the terminal toolbar
 - session IDs, close reasons, duration, and operator fields in audit logs
 - automatic process cleanup when the browser disconnects or the session idles
+
+Terminal sessions currently open as `root`; other execution users are rejected
+when the ticket is created.
 
 ::: tip Terminal access is ticket-based
 Browsers cannot attach arbitrary `Authorization` headers to a WebSocket upgrade.
@@ -95,14 +98,9 @@ request first, issues a one-time ticket with a short TTL, and validates that
 ticket during the WebSocket upgrade.
 :::
 
-For local or custom deployments, CubeAPI must be able to reach CubeProxy/envd.
-Set `CUBE_API_SANDBOX_PROXY_URL` to the HTTP base URL that accepts sandbox
-virtual-host requests. For backward compatibility, CubeAPI also falls back to
-`AGENTHUB_SANDBOX_PROXY_URL` when the new variable is not set.
-
-```bash
-export CUBE_API_SANDBOX_PROXY_URL=http://127.0.0.1
-```
+CubeAPI must be able to reach CubeMaster's internal HTTP address configured by
+`CUBE_MASTER_ADDR`. The CubeMaster terminal endpoint accepts only the internal
+CubeAPI relay handshake and rejects browser-originated WebSocket connections.
 
 The default idle timeout is 30 minutes. Override it with either of these
 variables:
@@ -119,15 +117,14 @@ Terminal audit events are emitted as structured logs:
 | --- | --- |
 | `terminal.ticket.issued` | `sandbox_id`, `container_id`, requested `rows`, requested `cols` |
 | `terminal.open_failed` | `sandbox_id`, `container_id`, `created_by`, `stage`, `error` |
-| `terminal.opened` | `sandbox_id`, `container_id`, `session_id`, `created_by`, `pid` |
+| `terminal.opened` | `sandbox_id`, `container_id`, `session_id`, `created_by`, `exec_id` |
 | `terminal.closed` | `sandbox_id`, `container_id`, `session_id`, `close_reason`, `duration_ms`, `process_ended` |
 
-::: warning Runtime note
+::: tip Container targeting
 When CubeAPI receives container metadata from CubeMaster, the Dashboard shows a
-container selector and binds the selected `containerID` to the terminal ticket.
-The current PTY bridge still uses envd's existing process API, so deployments
-should verify that their runtime maps that selection to the intended container
-before relying on per-container isolation for operational workflows.
+container selector and binds the selected `containerID` to the one-time ticket.
+Cubelet verifies that the container belongs to the sandbox before creating the
+PTY process in that exact container.
 :::
 
 ### 3.4 Configure the API key (only if auth is enabled)

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tencent. All rights reserved.
 
 export type TerminalServerMessage =
-  | { type: 'start'; pid?: number; sessionId?: string }
+  | { type: 'start'; execId?: string; sessionId?: string }
   | { type: 'output'; data?: string }
   | { type: 'exit'; exitCode?: number | null; error?: string | null }
   | { type: 'error'; message?: string }

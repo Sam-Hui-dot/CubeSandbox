@@ -31,15 +31,18 @@
     "title": "Terminal {{id}}",
     "description": "Interactive sandbox terminal.",
     "connecting": "Connecting to sandbox terminal...",
-    "started": "Terminal attached (pid {{pid}}).",
+    "started": "Attached to container {{container}} (exec {{execId}}).",
     "exited": "Terminal exited with code {{code}}.",
     "exitedWithError": "Terminal exited: {{message}}",
     "idleTimeout": "Terminal closed after {{seconds}}s of inactivity.",
     "session": "Session {{id}}",
+    "exec": "Process {{id}}",
+    "closedMessage": "The terminal connection is closed.",
     "scrollback": "{{lines}} lines scrollback",
     "container": {
       "select": "Select terminal container",
-      "current": "Container {{id}}"
+      "current": "Container {{id}}",
+      "switching": "Switching to container {{id}}..."
     },
     "status": {
       "idle": "Idle",
@@ -53,6 +56,8 @@
       "maximize": "Maximize",
       "restore": "Restore",
       "fit": "Fit",
+      "copySelection": "Copy selection",
+      "clear": "Clear terminal",
       "reconnect": "Reconnect",
       "close": "Close"
     },

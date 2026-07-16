@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Tencent Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{HashMap, VecDeque};
+use std::{collections::HashMap, time::Duration};
 
 use axum::{
     extract::{
@@ -19,6 +19,13 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{
+        client::IntoClientRequest, http::HeaderValue, protocol::WebSocketConfig,
+        Message as MasterMessage,
+    },
+};
 use utoipa::ToSchema;
 
 use crate::{
@@ -26,14 +33,17 @@ use crate::{
     logging::{LogEvent, LogLevel},
     models::{SandboxContainer, SandboxDetail, SandboxState},
     state::AppState,
-    terminal::{
-        validated_size, ConnectJsonParser, EnvdPtyClient, PtyByteStream, PtyEvent,
-        TerminalCloseReason, TerminalTicket, TerminalTicketStore,
-    },
+    terminal::{validated_size, TerminalCloseReason, TerminalTicket, TerminalTicketStore},
 };
 
 const TERMINAL_WS_MAX_MESSAGE_SIZE: usize = 256 * 1024;
 const TERMINAL_WS_MAX_FRAME_SIZE: usize = 256 * 1024;
+const TERMINAL_BACKEND_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const TERMINAL_BROWSER_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+const TERMINAL_RELAY_HEADER: &str = "X-Cube-Terminal-Relay";
+const TERMINAL_MAX_CWD_BYTES: usize = 4096;
+const TERMINAL_MAX_ENV_ENTRIES: usize = 128;
+const TERMINAL_MAX_ENV_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +54,7 @@ pub struct TerminalTicketRequest {
     pub cols: Option<u16>,
     pub cwd: Option<String>,
     pub envs: Option<HashMap<String, String>>,
+    /// Terminal execution user. Currently only `root` is supported.
     pub user: Option<String>,
 }
 
@@ -102,6 +113,7 @@ pub async fn create_terminal_ticket(
     headers: HeaderMap,
     Json(body): Json<TerminalTicketRequest>,
 ) -> AppResult<impl IntoResponse> {
+    validate_terminal_options(&body)?;
     let created_by = validate_terminal_access(&state, &headers).await?;
     let detail = state.services.sandboxes.get_sandbox(&sandbox_id).await?;
     if detail.state != SandboxState::Running {
@@ -113,20 +125,12 @@ pub async fn create_terminal_ticket(
     let container_id = select_terminal_container(&detail, body.container_id)?;
 
     let (rows, cols) = validated_size(body.rows, body.cols);
-    let user = body
-        .user
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "root".to_string());
     let expires_at = TerminalTicketStore::expires_at_from_now();
     let ticket = TerminalTicket {
         sandbox_id: sandbox_id.clone(),
-        domain: detail
-            .domain
-            .unwrap_or_else(|| state.config.sandbox_domain.clone()),
         container_id: container_id.clone(),
         rows,
         cols,
-        user,
         cwd: body.cwd.filter(|value| !value.trim().is_empty()),
         envs: body.envs.unwrap_or_default(),
         created_by,
@@ -159,6 +163,55 @@ pub async fn create_terminal_ticket(
     ))
 }
 
+fn validate_terminal_options(body: &TerminalTicketRequest) -> AppResult<()> {
+    if body
+        .user
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|user| !user.is_empty() && user != "root")
+    {
+        return Err(AppError::BadRequest(
+            "web terminal currently supports only the root user".to_string(),
+        ));
+    }
+    if let Some(cwd) = body.cwd.as_deref() {
+        if (!cwd.is_empty() && !cwd.starts_with('/'))
+            || cwd.len() > TERMINAL_MAX_CWD_BYTES
+            || cwd.contains('\0')
+        {
+            return Err(AppError::BadRequest(format!(
+                "terminal cwd must be absolute, at most {} bytes, and contain no NUL characters",
+                TERMINAL_MAX_CWD_BYTES
+            )));
+        }
+    }
+    if let Some(envs) = body.envs.as_ref() {
+        if envs.len() > TERMINAL_MAX_ENV_ENTRIES {
+            return Err(AppError::BadRequest(format!(
+                "terminal envs must contain at most {} entries",
+                TERMINAL_MAX_ENV_ENTRIES
+            )));
+        }
+        let mut total = 0usize;
+        for (key, value) in envs {
+            if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+                return Err(AppError::BadRequest(
+                    "terminal environment keys must be non-empty and environment values must contain no NUL characters"
+                        .to_string(),
+                ));
+            }
+            total = total.saturating_add(key.len() + value.len() + 1);
+        }
+        if total > TERMINAL_MAX_ENV_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "terminal envs exceed {} bytes",
+                TERMINAL_MAX_ENV_BYTES
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn select_terminal_container(
     detail: &SandboxDetail,
     requested: Option<String>,
@@ -183,7 +236,7 @@ fn select_terminal_container(
     }
 
     if containers.is_empty() {
-        return Ok(None);
+        return Ok(Some(detail.sandbox_id.clone()));
     }
 
     let running: Vec<_> = containers
@@ -341,79 +394,190 @@ fn is_loopback_host(value: &str) -> bool {
     )
 }
 
-async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket: WebSocket) {
+async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, mut socket: WebSocket) {
     let sandbox_id = ticket.sandbox_id.clone();
-    let container_id = ticket.container_id.clone();
+    let container_id = ticket
+        .container_id
+        .clone()
+        .unwrap_or_else(|| sandbox_id.clone());
     let created_by = ticket
         .created_by
         .clone()
         .unwrap_or_else(|| "anonymous".to_string());
-    let client = EnvdPtyClient::new(
-        state.http_client.clone(),
-        &ticket.sandbox_id,
-        &ticket.domain,
-    );
+    let relay_id = uuid::Uuid::new_v4().simple().to_string();
 
-    let response = match client
-        .start(
-            ticket.rows,
-            ticket.cols,
-            &ticket.user,
-            ticket.cwd.as_deref(),
-            &ticket.envs,
-        )
+    let backend_url = match cube_master_terminal_url(&state.config.cubemaster_url) {
+        Ok(url) => url,
+        Err(error) => {
+            log_terminal_open_failed(
+                &state,
+                &sandbox_id,
+                Some(&container_id),
+                &created_by,
+                "invalid_cubemaster_url",
+                &error.to_string(),
+            )
+            .await;
+            let _ = send_socket_json(
+                &mut socket,
+                json!({ "type": "error", "message": error.to_string() }),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let mut request = match backend_url.as_str().into_client_request() {
+        Ok(request) => request,
+        Err(error) => {
+            let _ = send_socket_json(
+                &mut socket,
+                json!({ "type": "error", "message": format!("invalid terminal backend request: {}", error) }),
+            )
+            .await;
+            return;
+        }
+    };
+    request
+        .headers_mut()
+        .insert(TERMINAL_RELAY_HEADER, HeaderValue::from_static("cube-api"));
+    let backend_config = WebSocketConfig {
+        max_message_size: Some(TERMINAL_WS_MAX_MESSAGE_SIZE),
+        max_frame_size: Some(TERMINAL_WS_MAX_FRAME_SIZE),
+        ..Default::default()
+    };
+    let (mut backend, _) = match connect_async_with_config(request, Some(backend_config), false)
         .await
     {
-        Ok(response) => response,
+        Ok(connection) => connection,
         Err(error) => {
             log_terminal_open_failed(
                 &state,
                 &sandbox_id,
-                container_id.as_deref(),
+                Some(&container_id),
                 &created_by,
-                "envd_start_failed",
+                "cubemaster_connect_failed",
                 &error.to_string(),
             )
             .await;
-            let (mut sender, _) = socket.split();
-            let _ = send_json(
-                &mut sender,
-                json!({ "type": "error", "message": error.to_string() }),
-            )
-            .await;
+            let _ = send_socket_json(
+                    &mut socket,
+                    json!({ "type": "error", "message": format!("failed to connect terminal backend: {}", error) }),
+                )
+                .await;
             return;
         }
     };
 
-    let mut upstream = Box::pin(response.bytes_stream()) as PtyByteStream;
-    let mut parser = ConnectJsonParser::default();
-    let mut pending = VecDeque::new();
-    let pid = match wait_for_start(&mut upstream, &mut parser, &mut pending).await {
-        Ok(pid) => pid,
-        Err(error) => {
+    let mut env: Vec<String> = ticket
+        .envs
+        .iter()
+        .map(|(key, value)| format!("{}={}", key, value))
+        .collect();
+    env.sort_unstable();
+    let open = json!({
+        "type": "open",
+        "requestID": relay_id,
+        "sandboxID": sandbox_id,
+        "containerID": container_id,
+        "args": ["/bin/sh"],
+        "cwd": ticket.cwd.unwrap_or_default(),
+        "env": env,
+        "cols": ticket.cols,
+        "rows": ticket.rows,
+    });
+    if let Err(error) = backend
+        .send(MasterMessage::Text(open.to_string().into()))
+        .await
+    {
+        let _ = send_socket_json(
+            &mut socket,
+            json!({ "type": "error", "message": format!("failed to open terminal backend: {}", error) }),
+        )
+        .await;
+        return;
+    }
+
+    let ready = tokio::time::timeout(TERMINAL_BACKEND_OPEN_TIMEOUT, async {
+        loop {
+            match backend.next().await {
+                Some(Ok(MasterMessage::Text(text))) => {
+                    let control: BackendTerminalControl =
+                        serde_json::from_str(&text).map_err(|error| {
+                            format!("invalid terminal backend control message: {}", error)
+                        })?;
+                    match control.kind.as_str() {
+                        "ready" => {
+                            return control
+                                .exec_id
+                                .filter(|value| !value.is_empty())
+                                .ok_or_else(|| {
+                                    "terminal backend ready message missing execID".to_string()
+                                });
+                        }
+                        "error" => {
+                            return Err(control.message.unwrap_or_else(|| {
+                                "terminal backend rejected the session".to_string()
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                Some(Ok(MasterMessage::Ping(data))) => {
+                    backend
+                        .send(MasterMessage::Pong(data))
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Some(Ok(MasterMessage::Close(_))) | None => {
+                    return Err("terminal backend closed before ready".to_string());
+                }
+                Some(Err(error)) => return Err(error.to_string()),
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+
+    let exec_id = match ready {
+        Ok(Ok(exec_id)) => exec_id,
+        Ok(Err(error)) => {
             log_terminal_open_failed(
                 &state,
                 &sandbox_id,
-                container_id.as_deref(),
+                Some(&container_id),
                 &created_by,
-                "start_event_failed",
-                &error.to_string(),
+                "backend_open_failed",
+                &error,
             )
             .await;
-            let (mut sender, _) = socket.split();
-            let _ = send_json(
-                &mut sender,
-                json!({ "type": "error", "message": error.to_string() }),
+            let _ =
+                send_socket_json(&mut socket, json!({ "type": "error", "message": error })).await;
+            return;
+        }
+        Err(_) => {
+            let message = "terminal backend did not become ready before timeout";
+            log_terminal_open_failed(
+                &state,
+                &sandbox_id,
+                Some(&container_id),
+                &created_by,
+                "backend_open_timeout",
+                message,
             )
             .await;
+            let _ =
+                send_socket_json(&mut socket, json!({ "type": "error", "message": message })).await;
             return;
         }
     };
 
-    let session =
-        state
-            .terminal_sessions
-            .open(&sandbox_id, container_id.clone(), pid, created_by.clone());
+    let session = state.terminal_sessions.open(
+        &sandbox_id,
+        Some(container_id.clone()),
+        exec_id.clone(),
+        created_by.clone(),
+    );
     let session_id = session.session_id.clone();
 
     state
@@ -421,26 +585,29 @@ async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket:
         .log(
             LogEvent::new(LogLevel::Info, "terminal.opened")
                 .field("sandbox_id", &sandbox_id)
-                .field("container_id", container_id.as_deref().unwrap_or(""))
+                .field("container_id", &container_id)
                 .field("session_id", &session_id)
-                .field("created_by", created_by.clone())
-                .field_value("pid", pid),
+                .field("exec_id", &exec_id)
+                .field("created_by", created_by.clone()),
         )
         .await;
 
-    let (mut sender, mut receiver) = socket.split();
-    if !send_json(
-        &mut sender,
-        json!({ "type": "start", "pid": pid, "sessionId": session_id }),
+    if !send_socket_json(
+        &mut socket,
+        json!({ "type": "start", "sessionId": session_id, "execId": exec_id }),
     )
     .await
     {
+        let _ = backend
+            .send(MasterMessage::Text(
+                json!({ "type": "close" }).to_string().into(),
+            ))
+            .await;
         close_terminal_session(
             &state,
-            &client,
             &session_id,
             &sandbox_id,
-            pid,
+            &exec_id,
             false,
             TerminalCloseReason::SendFailed,
         )
@@ -448,27 +615,12 @@ async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket:
         return;
     }
 
+    let (mut sender, mut receiver) = socket.split();
+    let (mut backend_sender, mut backend_receiver) = backend.split();
     let mut process_ended = false;
-    let mut close_reason = TerminalCloseReason::ClientDisconnected;
+    let close_reason;
     let idle_timeout = state.terminal_sessions.idle_timeout();
     let mut idle_sleep = Box::pin(tokio::time::sleep(idle_timeout));
-
-    while let Some(event) = pending.pop_front() {
-        if !send_pty_event(&mut sender, event).await {
-            close_terminal_session(
-                &state,
-                &client,
-                &session_id,
-                &sandbox_id,
-                pid,
-                process_ended,
-                TerminalCloseReason::SendFailed,
-            )
-            .await;
-            return;
-        }
-        refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
-    }
 
     loop {
         tokio::select! {
@@ -485,60 +637,121 @@ async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket:
                 .await;
                 break;
             }
-            chunk = upstream.next() => {
-                match chunk {
-                    Some(Ok(bytes)) => match parser.push(&bytes) {
-                        Ok(events) => {
-                            let mut send_failed = false;
-                            for event in events {
-                                if matches!(event, PtyEvent::End { .. }) {
-                                    process_ended = true;
-                                    close_reason = TerminalCloseReason::ProcessExited;
-                                } else if matches!(event, PtyEvent::StreamEnd) {
-                                    process_ended = true;
-                                    close_reason = TerminalCloseReason::StreamEnded;
-                                }
-                                if !send_pty_event(&mut sender, event).await {
-                                    close_reason = TerminalCloseReason::SendFailed;
-                                    send_failed = true;
-                                    break;
-                                }
-                                refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
+            message = backend_receiver.next() => {
+                refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
+                match message {
+                    Some(Ok(MasterMessage::Binary(data))) => {
+                        if !send_json(
+                            &mut sender,
+                            json!({ "type": "output", "data": BASE64.encode(data) }),
+                        )
+                        .await
+                        {
+                            close_reason = TerminalCloseReason::SendFailed;
+                            break;
+                        }
+                    }
+                    Some(Ok(MasterMessage::Text(text))) => {
+                        match serde_json::from_str::<BackendTerminalControl>(&text) {
+                            Ok(control) if control.kind == "exit" => {
+                                process_ended = true;
+                                close_reason = TerminalCloseReason::ProcessExited;
+                                let _ = send_json(
+                                    &mut sender,
+                                    json!({ "type": "exit", "exitCode": control.code.unwrap_or(0) }),
+                                )
+                                .await;
+                                break;
                             }
-                            if send_failed || process_ended {
+                            Ok(control) if control.kind == "error" => {
+                                close_reason = TerminalCloseReason::BackendError;
+                                let _ = send_json(
+                                    &mut sender,
+                                    json!({
+                                        "type": "error",
+                                        "message": control.message.unwrap_or_else(|| "terminal backend error".to_string()),
+                                    }),
+                                )
+                                .await;
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                close_reason = TerminalCloseReason::BackendError;
+                                let _ = send_json(
+                                    &mut sender,
+                                    json!({ "type": "error", "message": format!("invalid terminal backend message: {}", error) }),
+                                )
+                                .await;
                                 break;
                             }
                         }
-                        Err(error) => {
+                    }
+                    Some(Ok(MasterMessage::Ping(data))) => {
+                        if backend_sender.send(MasterMessage::Pong(data)).await.is_err() {
                             close_reason = TerminalCloseReason::BackendError;
-                            let _ = send_json(&mut sender, json!({ "type": "error", "message": error.to_string() })).await;
                             break;
                         }
-                    },
-                    Some(Err(error)) => {
-                        close_reason = TerminalCloseReason::BackendError;
-                        let _ = send_json(&mut sender, json!({ "type": "error", "message": format!("terminal stream failed: {}", error) })).await;
+                    }
+                    Some(Ok(MasterMessage::Pong(_))) | Some(Ok(MasterMessage::Frame(_))) => {}
+                    Some(Ok(MasterMessage::Close(_))) | None => {
+                        close_reason = TerminalCloseReason::StreamEnded;
                         break;
                     }
-                    None => {
-                        close_reason = TerminalCloseReason::StreamEnded;
-                        process_ended = true;
+                    Some(Err(error)) => {
+                        close_reason = TerminalCloseReason::BackendError;
+                        let _ = send_json(
+                            &mut sender,
+                            json!({ "type": "error", "message": format!("terminal backend failed: {}", error) }),
+                        )
+                        .await;
                         break;
-                    },
+                    }
                 }
             }
             message = receiver.next() => {
+                refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
-                        if let Err(error) = handle_client_text(&client, pid, &text).await {
-                            let _ = send_json(&mut sender, json!({ "type": "error", "message": error.to_string() })).await;
+                        match parse_terminal_client_message(&text) {
+                            Ok(TerminalClientCommand::Input(data)) => {
+                                if backend_sender.send(MasterMessage::Binary(data)).await.is_err() {
+                                    close_reason = TerminalCloseReason::BackendError;
+                                    break;
+                                }
+                            }
+                            Ok(TerminalClientCommand::Resize { rows, cols }) => {
+                                let control = json!({ "type": "resize", "rows": rows, "cols": cols });
+                                if backend_sender.send(MasterMessage::Text(control.to_string().into())).await.is_err() {
+                                    close_reason = TerminalCloseReason::BackendError;
+                                    break;
+                                }
+                            }
+                            Ok(TerminalClientCommand::Kill) => {
+                                let _ = backend_sender
+                                    .send(MasterMessage::Text(json!({ "type": "close" }).to_string().into()))
+                                    .await;
+                                close_reason = TerminalCloseReason::ClientDisconnected;
+                                break;
+                            }
+                            Ok(TerminalClientCommand::Ping) => {
+                                let _ = backend_sender
+                                    .send(MasterMessage::Text(json!({ "type": "heartbeat" }).to_string().into()))
+                                    .await;
+                            }
+                            Err(error) => {
+                                let _ = send_json(
+                                    &mut sender,
+                                    json!({ "type": "error", "message": error.to_string() }),
+                                )
+                                .await;
+                            }
                         }
                     }
                     Some(Ok(Message::Binary(data))) => {
-                        refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
-                        if let Err(error) = client.send_input(pid, &data).await {
-                            let _ = send_json(&mut sender, json!({ "type": "error", "message": error.to_string() })).await;
+                        if backend_sender.send(MasterMessage::Binary(data)).await.is_err() {
+                            close_reason = TerminalCloseReason::BackendError;
+                            break;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
@@ -546,12 +759,9 @@ async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket:
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
-                        refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
                         let _ = sender.send(Message::Pong(data)).await;
                     }
-                    Some(Ok(Message::Pong(_))) => {
-                        refresh_terminal_activity(&state, &session_id, &mut idle_sleep, idle_timeout);
-                    }
+                    Some(Ok(Message::Pong(_))) => {}
                     Some(Err(error)) => {
                         close_reason = TerminalCloseReason::ClientDisconnected;
                         tracing::warn!(sandbox_id = %sandbox_id, error = %error, "terminal websocket receive error");
@@ -562,16 +772,56 @@ async fn handle_terminal_socket(state: AppState, ticket: TerminalTicket, socket:
         }
     }
 
+    if !process_ended {
+        let _ = backend_sender
+            .send(MasterMessage::Text(
+                json!({ "type": "close" }).to_string().into(),
+            ))
+            .await;
+    }
+    let _ = backend_sender.send(MasterMessage::Close(None)).await;
     close_terminal_session(
         &state,
-        &client,
         &session_id,
         &sandbox_id,
-        pid,
+        &exec_id,
         process_ended,
         close_reason,
     )
     .await;
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendTerminalControl {
+    #[serde(rename = "type")]
+    kind: String,
+    exec_id: Option<String>,
+    code: Option<u32>,
+    message: Option<String>,
+}
+
+fn cube_master_terminal_url(base_url: &str) -> AppResult<reqwest::Url> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| {
+        AppError::Internal(anyhow::anyhow!("invalid CubeMaster URL: {}", error))
+    })?;
+    let scheme = match url.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        other => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "unsupported CubeMaster URL scheme: {}",
+                other
+            )))
+        }
+    };
+    url.set_scheme(scheme).map_err(|_| {
+        AppError::Internal(anyhow::anyhow!("failed to set CubeMaster WebSocket scheme"))
+    })?;
+    url.set_path("/cube/sandbox/terminal");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
 }
 
 async fn log_terminal_open_failed(
@@ -599,7 +849,7 @@ fn refresh_terminal_activity(
     state: &AppState,
     session_id: &str,
     idle_sleep: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
-    idle_timeout: std::time::Duration,
+    idle_timeout: Duration,
 ) {
     state.terminal_sessions.touch(session_id);
     idle_sleep
@@ -609,22 +859,18 @@ fn refresh_terminal_activity(
 
 async fn close_terminal_session(
     state: &AppState,
-    client: &EnvdPtyClient,
     session_id: &str,
     sandbox_id: &str,
-    pid: i64,
+    exec_id: &str,
     process_ended: bool,
     reason: TerminalCloseReason,
 ) {
-    if !process_ended {
-        let _ = client.kill(pid).await;
-    }
     let closed = state.terminal_sessions.close(session_id, reason.clone());
     let mut event = LogEvent::new(LogLevel::Info, "terminal.closed")
         .field("sandbox_id", sandbox_id)
         .field("session_id", session_id)
+        .field("exec_id", exec_id)
         .field("close_reason", reason.as_str())
-        .field_value("pid", pid)
         .field_value("process_ended", process_ended);
 
     if let Some(session) = closed {
@@ -641,36 +887,6 @@ async fn close_terminal_session(
     }
 
     state.logger.log(event).await;
-}
-
-async fn wait_for_start(
-    upstream: &mut PtyByteStream,
-    parser: &mut ConnectJsonParser,
-    pending: &mut VecDeque<PtyEvent>,
-) -> AppResult<i64> {
-    while let Some(chunk) = upstream.next().await {
-        let bytes = chunk.map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("failed reading envd terminal start: {}", e))
-        })?;
-        for event in parser.push(&bytes)? {
-            match event {
-                PtyEvent::Start { pid } => return Ok(pid),
-                other => pending.push_back(other),
-            }
-        }
-    }
-    Err(AppError::Internal(anyhow::anyhow!(
-        "envd terminal stream closed before start event"
-    )))
-}
-
-async fn handle_client_text(client: &EnvdPtyClient, pid: i64, text: &str) -> AppResult<()> {
-    match parse_terminal_client_message(text)? {
-        TerminalClientCommand::Input(data) => client.send_input(pid, &data).await,
-        TerminalClientCommand::Resize { rows, cols } => client.resize(pid, rows, cols).await,
-        TerminalClientCommand::Kill => client.kill(pid).await.map(|_| ()),
-        TerminalClientCommand::Ping => Ok(()),
-    }
 }
 
 fn parse_terminal_client_message(text: &str) -> AppResult<TerminalClientCommand> {
@@ -700,29 +916,26 @@ fn parse_terminal_client_message(text: &str) -> AppResult<TerminalClientCommand>
     }
 }
 
-async fn send_pty_event(sender: &mut SplitSink<WebSocket, Message>, event: PtyEvent) -> bool {
-    match event {
-        PtyEvent::Start { pid } => send_json(sender, json!({ "type": "start", "pid": pid })).await,
-        PtyEvent::Output { data } => {
-            send_json(
-                sender,
-                json!({ "type": "output", "data": BASE64.encode(data) }),
-            )
-            .await
-        }
-        PtyEvent::End { exit_code, error } => {
-            send_json(
-                sender,
-                json!({ "type": "exit", "exitCode": exit_code, "error": error }),
-            )
-            .await
-        }
-        PtyEvent::StreamEnd => send_json(sender, json!({ "type": "streamEnd" })).await,
-    }
+async fn send_socket_json(socket: &mut WebSocket, value: Value) -> bool {
+    matches!(
+        tokio::time::timeout(
+            TERMINAL_BROWSER_WRITE_TIMEOUT,
+            socket.send(Message::Text(value.to_string())),
+        )
+        .await,
+        Ok(Ok(()))
+    )
 }
 
 async fn send_json(sender: &mut SplitSink<WebSocket, Message>, value: Value) -> bool {
-    sender.send(Message::Text(value.to_string())).await.is_ok()
+    matches!(
+        tokio::time::timeout(
+            TERMINAL_BROWSER_WRITE_TIMEOUT,
+            sender.send(Message::Text(value.to_string())),
+        )
+        .await,
+        Ok(Ok(()))
+    )
 }
 
 #[cfg(test)]
@@ -830,6 +1043,29 @@ mod tests {
     }
 
     #[test]
+    fn terminal_options_reject_unsupported_user_and_malformed_env() {
+        let mut request = TerminalTicketRequest {
+            user: Some("nobody".to_string()),
+            ..Default::default()
+        };
+        assert!(validate_terminal_options(&request).is_err());
+
+        request.user = Some("root".to_string());
+        request.cwd = Some("relative/path".to_string());
+        assert!(validate_terminal_options(&request).is_err());
+
+        request.cwd = Some("/workspace".to_string());
+        request.envs = Some(HashMap::from([(
+            "BAD=KEY".to_string(),
+            "value".to_string(),
+        )]));
+        assert!(validate_terminal_options(&request).is_err());
+
+        request.envs = Some(HashMap::from([("TERM".to_string(), "xterm".to_string())]));
+        assert!(validate_terminal_options(&request).is_ok());
+    }
+
+    #[test]
     fn terminal_container_selection_defaults_single_running_container() {
         let detail = detail_with_containers(vec![container(
             "ctr-main",
@@ -841,6 +1077,26 @@ mod tests {
             select_terminal_container(&detail, None).unwrap().as_deref(),
             Some("ctr-main")
         );
+    }
+
+    #[test]
+    fn terminal_container_selection_falls_back_to_sandbox_id_for_legacy_detail() {
+        let detail = detail_with_containers(Vec::new());
+        assert_eq!(
+            select_terminal_container(&detail, None).unwrap().as_deref(),
+            Some("sbx")
+        );
+    }
+
+    #[test]
+    fn cube_master_terminal_url_preserves_authority_and_replaces_path() {
+        let url = cube_master_terminal_url("https://master.example.com:8443/api?token=hidden")
+            .expect("valid CubeMaster URL");
+        assert_eq!(
+            url.as_str(),
+            "wss://master.example.com:8443/cube/sandbox/terminal"
+        );
+        assert!(cube_master_terminal_url("ftp://master.example.com").is_err());
     }
 
     #[test]
