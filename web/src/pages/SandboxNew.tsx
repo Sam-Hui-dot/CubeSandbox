@@ -15,15 +15,20 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
 // ── Types ────────────────────────────────────────────────────────────────────
-interface MetaEntry { key: string; value: string }
+interface MetaEntry {
+  key: string;
+  value: string;
+}
 
 interface FormState {
   templateID: string;
+  timeout: string;
   meta: MetaEntry[];
 }
 
 const DEFAULT_FORM: FormState = {
   templateID: '',
+  timeout: '',
   meta: [],
 };
 
@@ -47,9 +52,7 @@ function TemplatePicker({
     staleTime: 15_000,
   });
   const staleTemplates = new Set(
-    (compat?.templates ?? [])
-      .filter((row) => row.overall === 'STALE')
-      .map((row) => row.templateID),
+    (compat?.templates ?? []).filter((row) => row.overall === 'STALE').map((row) => row.templateID),
   );
 
   if (isLoading) {
@@ -86,7 +89,15 @@ function TemplatePicker({
             <div className="flex items-center justify-between gap-2">
               <span className="truncate font-mono text-sm font-medium">{tpl.templateID}</span>
               <Badge
-                tone={isStale ? 'err' : statusLower === 'ready' ? 'ok' : statusLower === 'building' ? 'warn' : 'err'}
+                tone={
+                  isStale
+                    ? 'err'
+                    : statusLower === 'ready'
+                      ? 'ok'
+                      : statusLower === 'building'
+                        ? 'warn'
+                        : 'err'
+                }
                 className="shrink-0 text-xs"
               >
                 {isStale ? t('compat.stale') : tpl.status}
@@ -157,7 +168,15 @@ function MetaEditor({
 }
 
 // ── Section wrapper ──────────────────────────────────────────────────────────
-function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -190,8 +209,10 @@ export default function SandboxNewPage() {
       form.meta.forEach(({ key, value }) => {
         if (key.trim()) metadata[key.trim()] = value;
       });
+      const parsedTimeout = Number.parseInt(form.timeout, 10);
       return sandboxApi.create({
         templateID: form.templateID,
+        timeout: Number.isFinite(parsedTimeout) && parsedTimeout >= 0 ? parsedTimeout : undefined,
         metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       });
     },
@@ -233,7 +254,22 @@ export default function SandboxNewPage() {
         )}
       </Section>
 
-
+      {/* Timeout */}
+      <Section title={t('section.config')} description={t('section.configDesc')}>
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">{t('form.timeout')}</label>
+          <Input
+            type="number"
+            min={0}
+            step={60}
+            placeholder={t('form.timeoutPlaceholder')}
+            value={form.timeout}
+            onChange={(e) => set('timeout', e.target.value)}
+            className="font-mono text-sm"
+          />
+          <p className="text-xs text-muted-foreground">{t('form.timeoutHint')}</p>
+        </div>
+      </Section>
 
       {/* Metadata */}
       <Section title={t('section.metadata')} description={t('section.metadataDesc')}>

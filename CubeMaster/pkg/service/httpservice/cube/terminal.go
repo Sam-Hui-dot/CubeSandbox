@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/gin-gonic/gin"
 	cubebox "github.com/tencentcloud/CubeSandbox/CubeMaster/api/services/cubebox/v1"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/cubelet"
@@ -63,6 +64,11 @@ type terminalControl struct {
 	Code    uint32 `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	ExecID  string `json:"execID,omitempty"`
+}
+
+func handleTerminalGinAction(c *gin.Context) {
+	rt := CubeLog.GetTraceInfo(c.Request.Context())
+	handleTerminalAction(c.Writer, c.Request, rt)
 }
 
 func handleTerminalAction(w http.ResponseWriter, r *http.Request, rt *CubeLog.RequestTrace) {

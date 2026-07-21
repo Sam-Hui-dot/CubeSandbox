@@ -70,6 +70,9 @@
 #define ICMP_CSUM_OFF(LEN)		(sizeof(struct ethhdr) + LEN + offsetof(struct icmphdr, checksum))
 #define ICMP_ECHO_ID_OFF(LEN)		(sizeof(struct ethhdr) + LEN + offsetof(struct icmphdr, un.echo.id))
 
+/* Current network namespace */
+#define BPF_F_CURRENT_NETNS		(-1L)
+
 /* IP and MAC address inside MVMs */
 const volatile __u32 mvm_inner_ip       = 0x0644fea9;	/* 169.254.68.6, network byte order */
 const volatile __u32 mvm_macaddr_p1     = 0xfc6f9020;	/* 20:90:6f:fc:fc:fc */
@@ -111,16 +114,6 @@ struct mvm_meta {
 	__u8 dns_policy_flags;
 	__u8 reserved[55];
 };
-
-static __always_inline bool dns_policy_learning_enabled(const struct mvm_meta *mvm_meta)
-{
-	return mvm_meta && (mvm_meta->dns_policy_flags & DNS_POLICY_FLAG_LEARNING_ENABLED);
-}
-
-static __always_inline bool dns_policy_enabled(const struct mvm_meta *mvm_meta)
-{
-	return mvm_meta && mvm_meta->dns_policy_flags;
-}
 
 /* https://elixir.bootlin.com/linux/v5.4.217/source/include/uapi/linux/if_arp.h#L144 */
 /* Linux kernel defines struct arphdr ONLY, we need the Ethernet part */
@@ -239,6 +232,43 @@ struct snat_ip {
 	__u16 reserved;
 };
 
+/* Tail-call state for DNS response handling on the ingress UDP NAT path.
+ *
+ * The response handler is split into its own tail-called program to keep the
+ * from_world verifier complexity within the 1M instruction budget. We stash
+ * the values the caller already derived (DNS payload offset, target sandbox
+ * ifindex, DNS server IP, sandbox-side port) so the tail-called program can
+ * re-pull headers, learn A records, and finish UDP NAT without re-deriving
+ * them from scratch.
+ */
+struct dns_response_state {
+	__u32 dns_off;
+	__u32 ifindex;		/* sandbox tap ifindex (sess->vm_ifindex) */
+	__u32 server_ip;	/* DNS server IP (l3->saddr in network byte order) */
+	__u16 source_port;	/* sandbox-side UDP port (sess->vm_port in nbo) */
+	__u16 reserved;
+};
+
+/* skb->cb[0] is reserved as a per-invocation NAT status word used by
+ * create_nat_session() to communicate the failure reason back to callers
+ * in from_cube(). skb->cb[] is 5 * u32 scratch that survives across
+ * bpf-to-bpf calls within a single program invocation, so this works even
+ * when the session helpers are compiled as subprogs.
+ */
+#define NAT_CB_STATUS_INDEX		0
+#define NAT_CB_OK			0
+#define NAT_CB_DENIED_BY_POLICY		1
+
+static __always_inline void nat_cb_set(struct __sk_buff *skb, __u32 status)
+{
+	skb->cb[NAT_CB_STATUS_INDEX] = status;
+}
+
+static __always_inline __u32 nat_cb_get(const struct __sk_buff *skb)
+{
+	return skb->cb[NAT_CB_STATUS_INDEX];
+}
+
 /* static assert, make sure size of structs are expected
  */
 static __always_inline int _()
@@ -257,6 +287,14 @@ static __always_inline int _()
 	int q[sizeof(struct snat_ip) % 16 == 0 ? 1 : -1] = {};
 
 	return b[0] + d[0] + r[0] + f[0] + g[0] + h[0] + i[0] + l[0] + n[0] + o[0] + p[0] + q[0];
+}
+
+static __always_inline __attribute__((used)) __u32 __btf_pin(void)
+{
+	return __builtin_btf_type_id(*(struct lpm_key *)0, BPF_TYPE_ID_LOCAL) +
+	       __builtin_btf_type_id(*(struct net_policy_value_v2 *)0, BPF_TYPE_ID_LOCAL) +
+	       __builtin_btf_type_id(*(struct dns_allow_key *)0, BPF_TYPE_ID_LOCAL) +
+	       __builtin_btf_type_id(*(struct dns_allow_value *)0, BPF_TYPE_ID_LOCAL);
 }
 
 #endif /* __CUBEVS_H */

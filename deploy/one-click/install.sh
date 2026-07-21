@@ -220,10 +220,26 @@ check_dns_preflight() {
     return 0
   fi
 
-  require_cmd systemctl
-  local nm_load_state
-  nm_load_state="$(systemctl show -p LoadState --value NetworkManager 2>/dev/null || true)"
-  [[ "${nm_load_state}" == "loaded" ]] || die "DNS setup requires resolvectl or NetworkManager"
+  # Without resolvectl the DNS scripts fall back to dnsmasq. CUBE_PROXY_DNSMASQ_MODE
+  # picks who owns it (see dns-host-route-up.sh); mirror that check here so the
+  # installer does not reject a host the runtime would actually support.
+  local dnsmasq_mode="${CUBE_PROXY_DNSMASQ_MODE:-networkmanager}"
+  case "${dnsmasq_mode}" in
+    networkmanager)
+      require_cmd systemctl
+      local nm_load_state
+      nm_load_state="$(systemctl show -p LoadState --value NetworkManager 2>/dev/null || true)"
+      [[ "${nm_load_state}" == "loaded" ]] || \
+        die "DNS setup requires resolvectl or NetworkManager (or set CUBE_PROXY_DNSMASQ_MODE=standalone)"
+      ;;
+    standalone)
+      # standalone mode manages dnsmasq itself and only uses NetworkManager
+      # opportunistically, so it does not require one to be loaded.
+      ;;
+    *)
+      die "unsupported CUBE_PROXY_DNSMASQ_MODE: ${dnsmasq_mode} (expected networkmanager or standalone)"
+      ;;
+  esac
 
   if ! command -v dnsmasq >/dev/null 2>&1; then
     require_any_cmd dnf yum apt-get
@@ -279,7 +295,11 @@ generate_cubemaster_config_ports() {
 
   local cfg="${PKG_ROOT}/CubeMaster/conf.yaml"
   local mysql_port="${CUBE_SANDBOX_MYSQL_PORT:-3306}"
+  local mysql_user="${CUBE_SANDBOX_MYSQL_USER:-cube}"
+  local mysql_password="${CUBE_SANDBOX_MYSQL_PASSWORD:-cube_pass}"
+  local mysql_db="${CUBE_SANDBOX_MYSQL_DB:-cube_mvp}"
   local redis_port="${CUBE_SANDBOX_REDIS_PORT:-6379}"
+  local redis_password="${CUBE_SANDBOX_REDIS_PASSWORD:-ceuhvu123}"
   # Decoupled from the TKE path: one-click decides CubeMaster's listen address
   # here. Defaults to 0.0.0.0 to stay reachable from compute nodes / host-net
   # cube-proxy; set CUBEMASTER_HTTP_BIND=127.0.0.1 to harden a lone node.
@@ -288,7 +308,11 @@ generate_cubemaster_config_ports() {
   ensure_file "${cfg}"
   sed -i \
     -e "s|__CUBE_SANDBOX_MYSQL_PORT__|${mysql_port}|g" \
+    -e "s|__CUBE_SANDBOX_MYSQL_USER__|$(escape_sed "${mysql_user}")|g" \
+    -e "s|__CUBE_SANDBOX_MYSQL_PASSWORD__|$(escape_sed "${mysql_password}")|g" \
+    -e "s|__CUBE_SANDBOX_MYSQL_DB__|$(escape_sed "${mysql_db}")|g" \
     -e "s|__CUBE_SANDBOX_REDIS_PORT__|${redis_port}|g" \
+    -e "s|__CUBE_SANDBOX_REDIS_PASSWORD__|$(escape_sed "${redis_password}")|g" \
     -e "s|__CUBEMASTER_HTTP_BIND__|$(escape_sed "${http_bind}")|g" \
     "${cfg}"
 }
@@ -995,6 +1019,7 @@ assert_safe_install_prefix "${INSTALL_PREFIX}"
 rm -rf \
   "${INSTALL_PREFIX}/network-agent" \
   "${INSTALL_PREFIX}/CubeAPI" \
+  "${INSTALL_PREFIX}/CubeOps" \
   "${INSTALL_PREFIX}/CubeMaster" \
   "${INSTALL_PREFIX}/Cubelet" \
   "${INSTALL_PREFIX}/cubeproxy" \
@@ -1006,6 +1031,7 @@ rm -rf \
   "${INSTALL_PREFIX}/cube-kernel-scf" \
   "${INSTALL_PREFIX}/cube-image" \
   "${INSTALL_PREFIX}/cube-egress" \
+  "${INSTALL_PREFIX}/cube-lifecycle-manager" \
   "${INSTALL_PREFIX}/scripts" \
   "${INSTALL_PREFIX}/sql" \
   "${INSTALL_PREFIX}/.one-click.env"
@@ -1028,6 +1054,12 @@ fi
 
 select_installed_kernel_vmlinux
 
+prepare_volume_plugin_install \
+  "${INSTALL_PREFIX}" \
+  "${INSTALL_MODE}" \
+  "${UPGRADE_BACKUP_DIR}" \
+  "${DEPLOY_ROLE}"
+
 mkdir -p \
   "${INSTALL_PREFIX}/cube-vs/network" \
   "${INSTALL_PREFIX}/cube-snapshot" \
@@ -1035,11 +1067,13 @@ mkdir -p \
   /data/log/CubeShim \
   /data/log/CubeVmm \
   /data/cube-shim/disks \
-  /data/snapshot_pack/disks
+  /data/snapshot_pack/disks \
+  /data/volume
 
 if [[ "${DEPLOY_ROLE}" != "compute" ]]; then
   mkdir -p \
     /data/log/CubeAPI \
+    /data/log/CubeOps \
     /data/log/CubeMaster \
     /data/log/cube-proxy
 fi
@@ -1177,6 +1211,7 @@ fi
 
 if [[ "${DEPLOY_ROLE}" != "compute" ]]; then
   chmod +x "${INSTALL_PREFIX}/CubeAPI/bin/cube-api"
+  chmod +x "${INSTALL_PREFIX}/CubeOps/bin/cubeops"
   chmod +x "${INSTALL_PREFIX}/CubeMaster/bin/cubemaster" "${INSTALL_PREFIX}/CubeMaster/bin/cubemastercli"
 fi
 

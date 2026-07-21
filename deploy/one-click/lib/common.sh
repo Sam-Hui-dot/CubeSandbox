@@ -697,8 +697,8 @@ patch_cubelet_config_template() {
   if [[ -n "${eth_name}" ]]; then
     validate_interface_name "${eth_name}" "CUBE_SANDBOX_ETH_NAME"
     if grep -Eq '^[[:space:]]*eth_name = "' "${cubelet_config}"; then
-      sed -i "s/eth_name = \"[^\"]*\"/eth_name = \"${eth_name}\"/" "${cubelet_config}"
-      if ! grep -Fq "eth_name = \"${eth_name}\"" "${cubelet_config}"; then
+      sed -i -E "s|^([[:space:]]*)eth_name = \"[^\"]*\"|\1eth_name = \"${eth_name}\"|" "${cubelet_config}"
+      if ! grep -Eq "^[[:space:]]*eth_name = \"${eth_name}\"\$" "${cubelet_config}"; then
         log "WARNING: failed to patch eth_name in Cubelet config (${cubelet_config})"
       fi
     else
@@ -708,8 +708,8 @@ patch_cubelet_config_template() {
 
   if [[ -n "${network_cidr}" ]]; then
     if grep -Eq '^[[:space:]]*cidr = "' "${cubelet_config}"; then
-      sed -i "s|cidr = \"[^\"]*\"|cidr = \"${network_cidr}\"|" "${cubelet_config}"
-      if ! grep -Fq "cidr = \"${network_cidr}\"" "${cubelet_config}"; then
+      sed -i -E "s|^([[:space:]]*)cidr = \"[^\"]*\"|\1cidr = \"${network_cidr}\"|" "${cubelet_config}"
+      if ! grep -Eq "^[[:space:]]*cidr = \"${network_cidr}\"\$" "${cubelet_config}"; then
         log "WARNING: failed to patch cidr in Cubelet config (${cubelet_config})"
       fi
       log "patched cubevs CIDR: ${network_cidr}"
@@ -725,8 +725,8 @@ patch_cubelet_config_template() {
       cube_router_enable_toml="true"
     fi
     if grep -Eq '^[[:space:]]*cube_router_enable = ' "${cubelet_config}"; then
-      sed -i "s|cube_router_enable = .*|cube_router_enable = ${cube_router_enable_toml}|" "${cubelet_config}"
-      if ! grep -Fq "cube_router_enable = ${cube_router_enable_toml}" "${cubelet_config}"; then
+      sed -i -E "s|^([[:space:]]*)cube_router_enable = .*|\1cube_router_enable = ${cube_router_enable_toml}|" "${cubelet_config}"
+      if ! grep -Eq "^[[:space:]]*cube_router_enable = ${cube_router_enable_toml}\$" "${cubelet_config}"; then
         log "WARNING: failed to patch cube_router_enable in Cubelet config (${cubelet_config})"
       fi
       log "patched cube-router enable: ${cube_router_enable_toml}"
@@ -737,8 +737,8 @@ patch_cubelet_config_template() {
 
   if [[ -n "${cube_router_cidr}" ]]; then
     if grep -Eq '^[[:space:]]*cube_router_cidr = "' "${cubelet_config}"; then
-      sed -i "s|cube_router_cidr = \"[^\"]*\"|cube_router_cidr = \"${cube_router_cidr}\"|" "${cubelet_config}"
-      if ! grep -Fq "cube_router_cidr = \"${cube_router_cidr}\"" "${cubelet_config}"; then
+      sed -i -E "s|^([[:space:]]*)cube_router_cidr = \"[^\"]*\"|\1cube_router_cidr = \"${cube_router_cidr}\"|" "${cubelet_config}"
+      if ! grep -Eq "^[[:space:]]*cube_router_cidr = \"${cube_router_cidr}\"\$" "${cubelet_config}"; then
         log "WARNING: failed to patch cube_router_cidr in Cubelet config (${cubelet_config})"
       fi
       log "patched cube-router CIDR: ${cube_router_cidr}"
@@ -992,6 +992,10 @@ DEPRECATED_KEYS = {
     "AGENTHUB_LLM_CREDENTIAL_MODE",
     "AGENTHUB_SECRET_KEY",
     "CUBE_API_DATABASE_URL",
+    # cube-proxy now pulls a pre-published image (MIRROR / CUBE_SANDBOX_CUBE_PROXY_IMAGE);
+    # the old local-build knobs must not linger as kept-extra after upgrade.
+    "CUBE_PROXY_IMAGE_TAG",
+    "CUBE_PROXY_BASE_IMAGE",
 }
 
 LEGACY_CUBE_PROXY_CERT_DIR_DEFAULTS = {
@@ -999,6 +1003,12 @@ LEGACY_CUBE_PROXY_CERT_DIR_DEFAULTS = {
     "'${ONE_CLICK_INSTALL_PREFIX}/cubeproxy/certs'",
     "${ONE_CLICK_INSTALL_PREFIX}/cubeproxy/certs",
 }
+
+# Old one-click default for the locally-built cube-proxy image. Upgrades that
+# still carry this exact value drop it (via DEPRECATED_KEYS) and adopt the
+# pre-published TCR image selected by MIRROR; only non-default custom tags are
+# migrated to CUBE_SANDBOX_CUBE_PROXY_IMAGE.
+LEGACY_CUBE_PROXY_IMAGE_TAG_DEFAULT = "cube-proxy:one-click"
 
 
 def normalize_legacy_value(key, val, tmpl_val):
@@ -1057,6 +1067,20 @@ for line in template:
     else:
         added.append((key, tmpl_val))
     out_lines.append("%s=%s" % (key, chosen))
+
+# Migrate a customized CUBE_PROXY_IMAGE_TAG into CUBE_SANDBOX_CUBE_PROXY_IMAGE
+# before the obsolete key is dropped. The old default cube-proxy:one-click is
+# NOT migrated: upgrades adopt the pre-published TCR image selected by MIRROR.
+legacy_proxy_image_tag = old_values.get("CUBE_PROXY_IMAGE_TAG", "").strip()
+if (legacy_proxy_image_tag
+        and legacy_proxy_image_tag != LEGACY_CUBE_PROXY_IMAGE_TAG_DEFAULT
+        and "CUBE_SANDBOX_CUBE_PROXY_IMAGE" not in old_values):
+    old_values["CUBE_SANDBOX_CUBE_PROXY_IMAGE"] = legacy_proxy_image_tag
+    migrated_legacy.append((
+        "CUBE_PROXY_IMAGE_TAG",
+        legacy_proxy_image_tag,
+        "CUBE_SANDBOX_CUBE_PROXY_IMAGE=%s" % legacy_proxy_image_tag,
+    ))
 
 # Old-only keys (present in old runtime, absent from the new template) are
 # host/user specific (NODE_IP, ROLE, control-plane addr, custom vars). Never
@@ -1298,7 +1322,9 @@ backup_before_upgrade() {
     "VERSION.txt" \
     "release-manifest.json" \
     "CubeMaster/conf.yaml" \
+    "CubeMaster/plugin/volume-cos.conf" \
     "Cubelet/config/config.toml" \
+    "Cubelet/plugin/volume-cos.conf" \
     "cube-shim/conf/config-cube.toml" \
     "network-agent/network-agent.yaml" \
     "cubeproxy/global.conf" \
@@ -1326,6 +1352,76 @@ backup_before_upgrade() {
 
   log "backed up existing config to ${backup_dir}"
   printf '%s\n' "${backup_dir}"
+}
+
+# restore_volume_plugin_config_from_upgrade_backup: on upgrade, put operator-edited
+# volume-cos.conf back after the packaged CubeMaster/Cubelet trees are replaced.
+restore_volume_plugin_config_from_upgrade_backup() {
+  local install_prefix="$1"
+  local install_mode="$2"
+  local backup_dir="$3"
+  local rel src dst
+
+  [[ "${install_mode}" == "upgrade" && -n "${backup_dir}" && -d "${backup_dir}" ]] || return 0
+
+  for rel in \
+    "CubeMaster/plugin/volume-cos.conf" \
+    "Cubelet/plugin/volume-cos.conf"
+  do
+    src="${backup_dir}/${rel}"
+    dst="${install_prefix}/${rel}"
+    if [[ -f "${src}" ]]; then
+      mkdir -p "$(dirname "${dst}")"
+      cp -a "${src}" "${dst}"
+      chmod 600 "${dst}" 2>/dev/null || true
+      log "restored ${rel} from upgrade backup"
+    fi
+  done
+}
+
+# seed_volume_plugin_config: create volume-cos.conf from the shipped example on
+# first install; skip when the file already exists (including after restore).
+seed_volume_plugin_config() {
+  local install_prefix="$1"
+  local deploy_role="$2"
+  local plugin_dir example conf
+
+  for plugin_dir in \
+    "CubeMaster/plugin" \
+    "Cubelet/plugin"
+  do
+    [[ "${deploy_role}" == "compute" && "${plugin_dir}" == CubeMaster/plugin ]] && continue
+    [[ -d "${install_prefix}/${plugin_dir}" ]] || continue
+    example="${install_prefix}/${plugin_dir}/volume-cos.conf.example"
+    conf="${install_prefix}/${plugin_dir}/volume-cos.conf"
+    if [[ ! -f "${conf}" && -f "${example}" ]]; then
+      cp -a "${example}" "${conf}"
+      chmod 600 "${conf}"
+      log "seeded ${plugin_dir}/volume-cos.conf from example (edit COS credentials before use)"
+    fi
+  done
+}
+
+# prepare_volume_plugin_install: restore/seed config and ensure plugin binaries
+# are executable under CubeMaster/Cubelet plugin directories.
+prepare_volume_plugin_install() {
+  local install_prefix="$1"
+  local install_mode="$2"
+  local backup_dir="$3"
+  local deploy_role="$4"
+  local plugin_bin
+
+  restore_volume_plugin_config_from_upgrade_backup \
+    "${install_prefix}" "${install_mode}" "${backup_dir}"
+  seed_volume_plugin_config "${install_prefix}" "${deploy_role}"
+
+  for plugin_bin in \
+    "${install_prefix}/CubeMaster/plugin/cube-volume-cos" \
+    "${install_prefix}/Cubelet/plugin/cube-volume-cos"
+  do
+    [[ -f "${plugin_bin}" ]] || continue
+    chmod +x "${plugin_bin}"
+  done
 }
 
 detect_pkg_manager() {

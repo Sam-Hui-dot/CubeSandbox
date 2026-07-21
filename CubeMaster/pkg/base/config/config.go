@@ -22,6 +22,7 @@ import (
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/utils"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/service/sandbox/types"
+	volumeplugin "github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/volume/plugin"
 	CubeLog "github.com/tencentcloud/CubeSandbox/cubelog"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -41,6 +42,16 @@ type Config struct {
 	ReqTemplateConf  *ReqTemplateConf      `yaml:"req_template_conf"`
 	HookWhitelist    *HookWhitelist        `yaml:"hook_whitelist"`
 	CubeEgressConf   *CubeEgressConf       `yaml:"cube_egress_conf"`
+
+	// VolumePlugins lists external Controller Hook Plugin configurations.
+	// Types: binary (fork CLI) or rpc (gRPC VolumeControllerService).
+	//
+	// Example:
+	//   volume_plugins:
+	//     - name: cos-rpc
+	//       type: rpc
+	//       socket_path: /run/cube-volume-cos-rpc.sock
+	VolumePlugins []volumeplugin.Config `yaml:"volume_plugins"`
 }
 
 type CommonConf struct {
@@ -545,26 +556,30 @@ type TemplateScore struct {
 }
 
 type CubeletConf struct {
-	Grpc                    *GrpcConf            `yaml:"grpc"`
-	CommonTimeoutInsec      int                  `yaml:"common_timeout_insec"`
-	CreateImageTimeoutInSec int                  `yaml:"create_image_timeout_insec"`
-	AsyncFlows              map[string]asyncFlow `yaml:"async_flows"`
-	RetryCode               []string             `yaml:"retry_code"`
-	LoopRetryCode           []string             `yaml:"loop_retry_code"`
-	ReuseRetryCode          []string             `yaml:"reuse_retry_code"`
-	CircuitBreakCode        []string             `yaml:"circuit_break_code"`
-	ExcludeLoopRetryCode    []string             `yaml:"exclude_loop_retry_code"`
-	BackoffRetryCode        []string             `yaml:"backoff_retry_code"`
-	MaxRetries              int64                `yaml:"max_retries"`
-	LoopMaxRetries          int64                `yaml:"loop_max_retries"`
-	BufferQueueMinJob       int64                `yaml:"buffer_queue_min_job"`
-	CreateConcurrentLimit   int64                `yaml:"create_concurrent_limit"`
-	DestroyConcurentLimit   int64                `yaml:"destroy_concurent_limit"`
-	ExposedPortList         []string             `yaml:"exposed_port_list"`
-	EnableExposedPort       bool                 `yaml:"enable_exposed_port"`
-	DisableRedisProxyPort   bool                 `yaml:"disable_redis_proxy_port"`
-	MaxDelayInSecond        int64                `yaml:"max_delay_in_second"`
-	BackoffRetryDelay       time.Duration        `yaml:"backoff_retry_delay"`
+	Grpc                    *GrpcConf `yaml:"grpc"`
+	CommonTimeoutInsec      int       `yaml:"common_timeout_insec"`
+	CreateImageTimeoutInSec int       `yaml:"create_image_timeout_insec"`
+	// Server default idle TTL when the client omits timeout. See docs/guide/lifecycle.md.
+	DefaultTimeoutInsec int `yaml:"default_timeout_insec"`
+	// Create RPC / scheduling deadline; decoupled from idle TTL.
+	CreateTimeoutInsec    int                  `yaml:"create_timeout_insec"`
+	AsyncFlows            map[string]asyncFlow `yaml:"async_flows"`
+	RetryCode             []string             `yaml:"retry_code"`
+	LoopRetryCode         []string             `yaml:"loop_retry_code"`
+	ReuseRetryCode        []string             `yaml:"reuse_retry_code"`
+	CircuitBreakCode      []string             `yaml:"circuit_break_code"`
+	ExcludeLoopRetryCode  []string             `yaml:"exclude_loop_retry_code"`
+	BackoffRetryCode      []string             `yaml:"backoff_retry_code"`
+	MaxRetries            int64                `yaml:"max_retries"`
+	LoopMaxRetries        int64                `yaml:"loop_max_retries"`
+	BufferQueueMinJob     int64                `yaml:"buffer_queue_min_job"`
+	CreateConcurrentLimit int64                `yaml:"create_concurrent_limit"`
+	DestroyConcurentLimit int64                `yaml:"destroy_concurent_limit"`
+	ExposedPortList       []string             `yaml:"exposed_port_list"`
+	EnableExposedPort     bool                 `yaml:"enable_exposed_port"`
+	DisableRedisProxyPort bool                 `yaml:"disable_redis_proxy_port"`
+	MaxDelayInSecond      int64                `yaml:"max_delay_in_second"`
+	BackoffRetryDelay     time.Duration        `yaml:"backoff_retry_delay"`
 }
 
 type GrpcConf struct {
@@ -891,6 +906,10 @@ func preHandleCubeletConf(config *Config) error {
 
 	if config.CubeletConf.CommonTimeoutInsec == 0 {
 		config.CubeletConf.CommonTimeoutInsec = 30
+	}
+	// DefaultTimeoutInsec is left untouched — see docs/guide/lifecycle.md.
+	if config.CubeletConf.CreateTimeoutInsec <= 0 {
+		config.CubeletConf.CreateTimeoutInsec = 300
 	}
 	if config.CubeletConf.MaxRetries == 0 {
 		config.CubeletConf.MaxRetries = 5

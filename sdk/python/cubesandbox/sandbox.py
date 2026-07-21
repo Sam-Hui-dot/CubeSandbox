@@ -9,7 +9,7 @@ import httpx
 import requests
 
 from ._commands import CommandResult, Commands
-from ._config import Config
+from ._config import Config, _auth_headers
 from ._exceptions import ApiError, AuthenticationError, CubeSandboxError, SandboxNotFoundError, TemplateNotFoundError
 from ._filesystem import Filesystem
 from ._models import Execution, ExecutionError, OutputMessage, Result, SnapshotInfo
@@ -22,16 +22,25 @@ from ._policy import (
 from ._pty import Pty
 from ._stream import _parse_line
 from ._transport import build_client
+from ._volume import VolumeMountsArg, _serialize_volume_mounts
 
 JUPYTER_PORT = 49999
+
+#: Never-timeout sentinel. See docs/guide/lifecycle.md.
+NEVER_TIMEOUT = -1
 
 
 def _check_response(resp: requests.Response) -> None:
     if resp.ok:
         return
     try:
-        msg = resp.json().get("message") or resp.json().get("detail") or resp.text
-    except Exception:
+        body = resp.json()
+        msg = (
+            (body.get("message") or body.get("detail") or resp.text)
+            if isinstance(body, dict)
+            else resp.text
+        )
+    except (ValueError, requests.JSONDecodeError):
         msg = resp.text or f"HTTP {resp.status_code}"
     code = resp.status_code
     if code in (401, 403):
@@ -149,6 +158,7 @@ class Sandbox:
         allow_internet_access: bool = True,
         network: Dict[str, Any] | None = None,
         lifecycle: Dict[str, Any] | None = None,
+        volume_mounts: VolumeMountsArg | None = None,
         config: Config | None = None,
         **kwargs: Any,
     ) -> "Sandbox":
@@ -156,7 +166,8 @@ class Sandbox:
 
         Args:
             template: Template ID. Falls back to ``CUBE_TEMPLATE_ID`` env var.
-            timeout: Sandbox TTL in seconds. Defaults to ``Config.timeout`` (300).
+            timeout: Sandbox idle timeout in seconds (``None`` omits the field).
+                See ``docs/guide/lifecycle.md``.
             env_vars: Environment variables injected into the sandbox.
             metadata: Arbitrary key-value metadata (e.g. network-policy, host-mount).
             allow_internet_access: When ``False``, the sandbox is blocked from
@@ -185,6 +196,16 @@ class Sandbox:
 
                 Absent ``lifecycle`` keeps today's behaviour (idle sandboxes
                 are killed).
+            volume_mounts: Optional dict mapping mount paths to volumes
+                (e2b-compatible). Key is the sandbox mount path, value is a
+                :class:`~cubesandbox.Volume` instance (or a plain ``volumeID``
+                string)::
+
+                    Sandbox.create(volume_mounts={"/workspace": vol})
+                    Sandbox.create(volume_mounts={"/workspace": "vol-123"})
+
+                Each value must resolve to an existing ``volumeID`` created via
+                :meth:`cubesandbox.Volume.create`.
             config: SDK config. Uses default (env-based) config if omitted.
 
         Returns:
@@ -200,7 +221,10 @@ class Sandbox:
         if not tpl:
             raise ValueError("template is required. Set CUBE_TEMPLATE_ID or pass template=")
 
-        payload: dict = {"templateID": tpl, "timeout": timeout or cfg.timeout}
+        # Omitted when None; see docs/guide/lifecycle.md.
+        payload: dict = {"templateID": tpl}
+        if timeout is not None:
+            payload["timeout"] = timeout
         if env_vars:
             payload["envVars"] = env_vars
         if metadata:
@@ -235,11 +259,13 @@ class Sandbox:
         # camelCase keys. Absent => server-side default ("kill" on timeout).
         if lifecycle:
             payload["lifecycle"] = _serialize_lifecycle(lifecycle)
+        if volume_mounts:
+            payload["volumeMounts"] = _serialize_volume_mounts(volume_mounts)
         payload.update(kwargs)
 
         s = requests.Session()
         resp = s.post(f"{cfg.api_url}/sandboxes", json=payload,
-                      headers={"Content-Type": "application/json"})
+                      headers={"Content-Type": "application/json", **_auth_headers(cfg)})
         _check_response(resp)
         return cls(resp.json(), config=cfg)
 
@@ -262,9 +288,10 @@ class Sandbox:
         """
         cfg = config or Config()
         s = requests.Session()
+        # Connect omits timeout; see docs/guide/lifecycle.md.
         resp = s.post(f"{cfg.api_url}/sandboxes/{sandbox_id}/connect",
-                      json={"timeout": cfg.timeout},
-                      headers={"Content-Type": "application/json"})
+                      json={},
+                      headers={"Content-Type": "application/json", **_auth_headers(cfg)})
         _check_response(resp)
         return cls(resp.json(), config=cfg)
 
@@ -282,7 +309,7 @@ class Sandbox:
         """
         cfg = config or Config()
         s = requests.Session()
-        resp = s.get(f"{cfg.api_url}/sandboxes")
+        resp = s.get(f"{cfg.api_url}/sandboxes", headers=_auth_headers(cfg))
         _check_response(resp)
         return resp.json()
 
@@ -300,7 +327,7 @@ class Sandbox:
         """
         cfg = config or Config()
         s = requests.Session()
-        resp = s.get(f"{cfg.api_url}/v2/sandboxes")
+        resp = s.get(f"{cfg.api_url}/v2/sandboxes", headers=_auth_headers(cfg))
         _check_response(resp)
         return resp.json()
 
@@ -317,7 +344,7 @@ class Sandbox:
         """
         cfg = config or Config()
         s = requests.Session()
-        resp = s.get(f"{cfg.api_url}/health")
+        resp = s.get(f"{cfg.api_url}/health", headers=_auth_headers(cfg))
         _check_response(resp)
         return resp.json()
 
@@ -421,7 +448,7 @@ class Sandbox:
                 f"Sandbox {self.sandbox_id!r} did not reach 'paused' state within {timeout}s"
             )
 
-    def resume(self, timeout: int = 300) -> None:
+    def resume(self, timeout: int | None = None) -> None:
         """POST /sandboxes/:sandboxID/resume - Resume a paused sandbox.
 
         .. deprecated::
@@ -429,15 +456,37 @@ class Sandbox:
             and returns a fresh :class:`Sandbox` instance.
 
         Args:
-            timeout: Sandbox TTL in seconds after resume (default: 300).
+            timeout: Sandbox TTL in seconds after resume (``None`` omits the field).
+                See ``docs/guide/lifecycle.md``.
 
         Raises:
             SandboxNotFoundError: If the sandbox does not exist (HTTP 404).
             ApiError: If the sandbox is already running (HTTP 409) or on
                 unexpected backend error (HTTP 500).
         """
+        body: dict = {}
+        if timeout is not None:
+            body["timeout"] = timeout
         resp = self._session.post(
             f"{self._config.api_url}/sandboxes/{self.sandbox_id}/resume",
+            json=body,
+        )
+        _check_response(resp)
+
+    def set_timeout(self, timeout: int) -> None:
+        """POST /sandboxes/:sandboxID/timeout - Set sandbox idle timeout.
+
+        Args:
+            timeout: New idle timeout in seconds. ``0`` requests immediate
+                timeout; positive values set a normal TTL; ``NEVER_TIMEOUT``
+                (-1) disables idle timeout entirely.
+
+        Raises:
+            SandboxNotFoundError: If the sandbox does not exist (HTTP 404).
+            ApiError: If the timeout is invalid or on unexpected backend error.
+        """
+        resp = self._session.post(
+            f"{self._config.api_url}/sandboxes/{self.sandbox_id}/timeout",
             json={"timeout": timeout},
         )
         _check_response(resp)
@@ -551,7 +600,7 @@ class Sandbox:
         if next_token is not None:
             params["nextToken"] = next_token
         s = requests.Session()
-        resp = s.get(f"{cfg.api_url}/snapshots", params=params)
+        resp = s.get(f"{cfg.api_url}/snapshots", params=params, headers=_auth_headers(cfg))
         _check_response(resp)
         items = [SnapshotInfo.from_dict(d) for d in (resp.json() or [])]
         nt = resp.headers.get("x-next-token") or None
@@ -575,7 +624,7 @@ class Sandbox:
         """
         cfg = config or Config()
         s = requests.Session()
-        resp = s.delete(f"{cfg.api_url}/templates/{snapshot_id}")
+        resp = s.delete(f"{cfg.api_url}/templates/{snapshot_id}", headers=_auth_headers(cfg))
         _check_response(resp)
 
     # 1.4 — create_from_snapshot is covered by Sandbox.create(template=snapshot_id).
@@ -746,7 +795,7 @@ class Sandbox:
 
     def _build_session(self) -> requests.Session:
         s = requests.Session()
-        s.headers.update({"Content-Type": "application/json"})
+        s.headers.update({"Content-Type": "application/json", **_auth_headers(self._config)})
         return s
 
     def _build_data_client(self) -> httpx.Client:
@@ -760,6 +809,16 @@ class Sandbox:
         CubeProxy rejects unauthenticated traffic with 403. Attaching the token
         as a default header on the httpx client covers run_code, the Connect
         fallback path, and filesystem read/write in one place.
+
+        Data-plane requests are also routed through CubeAPI's auth middleware,
+        which requires ``X-API-Key`` (or ``Authorization: Bearer``) whenever the
+        backend is started with an auth-callback URL. We therefore attach the
+        API key here as well so run_code / commands / filesystem / pty all
+        authenticate. When no key is configured ``_auth_headers`` returns ``{}``
+        and behavior is unchanged.
         """
+        headers = _auth_headers(self._config)
         token = self.traffic_access_token
-        return {"e2b-traffic-access-token": token} if token else {}
+        if token:
+            headers["e2b-traffic-access-token"] = token
+        return headers

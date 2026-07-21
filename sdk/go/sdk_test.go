@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -103,7 +104,7 @@ func TestCreateSendsPythonCompatiblePayload(t *testing.T) {
 	})
 
 	sb, err := client.Create(context.Background(), CreateOptions{
-		Timeout:             600 * time.Second,
+		Timeout:             DurationPtr(600 * time.Second),
 		EnvVars:             map[string]string{"FOO": "bar"},
 		Metadata:            map[string]string{"network-policy": "custom"},
 		AllowInternetAccess: &disallowInternet,
@@ -171,6 +172,43 @@ func TestCreateOmitsOptionalFieldsAndRequiresTemplate(t *testing.T) {
 	}
 }
 
+func TestCreateTimeoutWireValues(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, sandboxJSON(testSandboxID, "tpl-t"))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIURL: server.URL, TemplateID: "tpl-t"})
+	ctx := context.Background()
+
+	// Omitted → field absent (server decides).
+	if _, err := client.Create(ctx, CreateOptions{}); err != nil {
+		t.Fatalf("Create(omit): %v", err)
+	}
+	if _, ok := got["timeout"]; ok {
+		t.Fatalf("timeout must be omitted when unset: %#v", got)
+	}
+
+	// Explicit zero is sent as 0.
+	if _, err := client.Create(ctx, CreateOptions{Timeout: DurationPtr(0)}); err != nil {
+		t.Fatalf("Create(0): %v", err)
+	}
+	assertNumber(t, got, "timeout", 0)
+
+	// NeverTimeout is sent as -1.
+	if _, err := client.Create(ctx, CreateOptions{Timeout: DurationPtr(NeverTimeout)}); err != nil {
+		t.Fatalf("Create(never): %v", err)
+	}
+	assertNumber(t, got, "timeout", -1)
+}
+
 func TestLifecycleEndpoints(t *testing.T) {
 	var calls []string
 	var connectTimeout, resumeTimeout int
@@ -220,8 +258,10 @@ func TestLifecycleEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	if connectTimeout != 600 {
-		t.Fatalf("connect timeout=%d", connectTimeout)
+	// Connect no longer fabricates a timeout: the field is omitted so the
+	// server keeps its own timeout policy (decoded default int is 0).
+	if connectTimeout != 0 {
+		t.Fatalf("connect must omit timeout, got=%d", connectTimeout)
 	}
 
 	list, err := client.List(ctx)
@@ -244,7 +284,7 @@ func TestLifecycleEndpoints(t *testing.T) {
 	if err := sb.Pause(ctx, PauseOptions{Wait: &wait}); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if err := sb.Resume(ctx, 120*time.Second); err != nil {
+	if err := sb.Resume(ctx, DurationPtr(120*time.Second)); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	if resumeTimeout != 120 {
@@ -581,8 +621,18 @@ func TestCommandsRunUsesEnvdProcessStart(t *testing.T) {
 		}
 		gotHost = r.Host
 		gotHeaders = r.Header.Clone()
-		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+		body, _ := io.ReadAll(r.Body)
+		if len(body) < 5 {
+			t.Fatalf("request body too short for a Connect envelope: %d bytes", len(body))
+		}
+		if body[0] != 0 {
+			t.Fatalf("Connect envelope flags=%d, want 0", body[0])
+		}
+		if n := binary.BigEndian.Uint32(body[1:5]); int(n) != len(body)-5 {
+			t.Fatalf("Connect envelope length=%d, want %d", n, len(body)-5)
+		}
+		if err := json.Unmarshal(body[5:], &gotPayload); err != nil {
+			t.Fatalf("decode enveloped payload: %v", err)
 		}
 		w.Header().Set("Content-Type", connectContentType)
 		w.Write(connectEnvelope(0, `{"event":{"start":{"pid":123}}}`))
@@ -616,11 +666,14 @@ func TestCommandsRunUsesEnvdProcessStart(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if gotHost != "49999-sb-proc.cube.test" {
+	if gotHost != "49983-sb-proc.cube.test" {
 		t.Fatalf("Host=%q", gotHost)
 	}
 	if gotHeaders.Get("Content-Type") != connectContentType || gotHeaders.Get("Connect-Protocol-Version") != connectProtocolVersion {
 		t.Fatalf("connect headers=%#v", gotHeaders)
+	}
+	if gotHeaders.Get("Connect-Content-Encoding") != "identity" {
+		t.Fatalf("Connect-Content-Encoding=%q, want identity", gotHeaders.Get("Connect-Content-Encoding"))
 	}
 	if gotHeaders.Get("Connect-Timeout-Ms") != "1500" || gotHeaders.Get("X-Access-Token") != "envd-token" {
 		t.Fatalf("headers=%#v", gotHeaders)
@@ -641,6 +694,67 @@ func TestCommandsRunUsesEnvdProcessStart(t *testing.T) {
 		t.Fatalf("stdin=%#v", gotPayload["stdin"])
 	}
 	if result.Stdout != "cmd-out\n" || result.Stderr != "cmd-err\n" || result.ExitCode != 7 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestProcessEndEventExitCode(t *testing.T) {
+	i := func(v int) *int { return &v }
+	cases := []struct {
+		name string
+		end  processEndEvent
+		code int
+		ok   bool
+	}{
+		{"explicit camelCase", processEndEvent{ExitCode: i(3), Exited: true, Status: "exit status 3"}, 3, true},
+		{"explicit snake_case", processEndEvent{ExitCodeSnake: i(9), Exited: true}, 9, true},
+		{"explicit zero present", processEndEvent{ExitCode: i(0), Exited: true, Status: "exit status 0"}, 0, true},
+		// proto3 JSON omits a zero-valued exitCode: exit-0 arrives as status only.
+		{"exit-0 status only", processEndEvent{Exited: true, Status: "exit status 0"}, 0, true},
+		{"nonzero status only", processEndEvent{Exited: true, Status: "exit status 5"}, 5, true},
+		{"exited flag only", processEndEvent{Exited: true}, 0, true},
+		{"unparsable status but exited", processEndEvent{Exited: true, Status: "signal: killed"}, 0, true},
+		{"nothing", processEndEvent{}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tc.end.exitCode()
+			if ok != tc.ok || got != tc.code {
+				t.Fatalf("exitCode()=(%d,%v), want (%d,%v)", got, ok, tc.code, tc.ok)
+			}
+		})
+	}
+}
+
+func TestCommandsRunExitZeroStatusOnly(t *testing.T) {
+	// Reproduces envd's real exit-0 end event: proto3 JSON drops the zero-valued
+	// exitCode, leaving only status/exited. Commands.Run must still succeed.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/process.Process/Start" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", connectContentType)
+		w.Write(connectEnvelope(0, `{"event":{"start":{"pid":7}}}`))
+		w.Write(connectEnvelope(0, fmt.Sprintf(`{"event":{"data":{"stdout":%q}}}`, base64.StdEncoding.EncodeToString([]byte("ok\n")))))
+		w.Write(connectEnvelope(0, `{"event":{"end":{"exited":true,"status":"exit status 0"}}}`))
+		w.Write(connectEnvelope(connectEndStreamFlag, `{}`))
+	}))
+	defer server.Close()
+
+	host, port := serverHostPort(t, server.URL)
+	client := NewClient(Config{
+		ProxyNodeIP:    host,
+		ProxyPortHTTP:  port,
+		SandboxDomain:  "cube.test",
+		RequestTimeout: time.Second,
+	})
+	sb := &Sandbox{client: client, SandboxID: "sb-proc", TemplateID: "tpl-test", EnvdAccessToken: "t"}
+
+	result, err := sb.Commands().Run(context.Background(), "true", CommandOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "ok\n" {
 		t.Fatalf("result=%#v", result)
 	}
 }
@@ -682,7 +796,7 @@ func TestFilesReadUsesEnvdHTTPFileAPI(t *testing.T) {
 	if content != "file content" {
 		t.Fatalf("content=%q", content)
 	}
-	if gotHost != "49999-sb-files.cube.test" || gotPath != "/tmp/foo bar.txt" || gotToken != "envd-token" {
+	if gotHost != "49983-sb-files.cube.test" || gotPath != "/tmp/foo bar.txt" || gotToken != "envd-token" {
 		t.Fatalf("host/path/token=%q/%q/%q", gotHost, gotPath, gotToken)
 	}
 }
@@ -795,6 +909,34 @@ func sandboxInfoJSON(sandboxID, state string) string {
 	return fmt.Sprintf(`{"sandboxID":%q,"templateID":"tpl-test","clientID":"client-1","startedAt":"2026-05-14T00:00:00Z","endAt":"2026-05-14T01:00:00Z","envdVersion":"0.0.1","domain":"cube.app","cpuCount":2,"memoryMB":512,"state":%q}`, sandboxID, state)
 }
 
+func TestSandboxInfoEndAtOmitted(t *testing.T) {
+	const payload = `{"sandboxID":"sb-1","templateID":"tpl-1","clientID":"c-1","startedAt":"2026-05-14T00:00:00Z","envdVersion":"0.0.1","cpuCount":2,"memoryMB":512,"state":"running"}`
+
+	var info SandboxInfo
+	if err := json.Unmarshal([]byte(payload), &info); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if info.EndAt != nil {
+		t.Fatalf("EndAt=%#v, want nil when API omits endAt", info.EndAt)
+	}
+}
+
+func TestSandboxInfoEndAtPresent(t *testing.T) {
+	const payload = `{"sandboxID":"sb-1","templateID":"tpl-1","clientID":"c-1","startedAt":"2026-05-14T00:00:00Z","endAt":"2026-05-14T01:00:00Z","envdVersion":"0.0.1","cpuCount":2,"memoryMB":512,"state":"running"}`
+
+	var info SandboxInfo
+	if err := json.Unmarshal([]byte(payload), &info); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if info.EndAt == nil {
+		t.Fatal("EndAt=nil, want non-nil when API includes endAt")
+	}
+	want := time.Date(2026, 5, 14, 1, 0, 0, 0, time.UTC)
+	if !info.EndAt.Equal(want) {
+		t.Fatalf("EndAt=%v want %v", info.EndAt, want)
+	}
+}
+
 func serverHostPort(t *testing.T, rawURL string) (string, int) {
 	t.Helper()
 	parsed, err := url.Parse(rawURL)
@@ -877,7 +1019,7 @@ func TestFilesListUsesEnvdFilesystemRPC(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name != "a.txt" || entries[0].Size != 10 || entries[0].IsDir() {
 		t.Fatalf("entries=%#v", entries)
 	}
-	if gotHost != "49999-sb-fs.cube.test" || gotPath != "/filesystem.Filesystem/ListDir" || gotCT != "application/json" {
+	if gotHost != "49983-sb-fs.cube.test" || gotPath != "/filesystem.Filesystem/ListDir" || gotCT != "application/json" {
 		t.Fatalf("host/path/ct=%q/%q/%q", gotHost, gotPath, gotCT)
 	}
 }
@@ -1321,5 +1463,124 @@ func TestGetTemplateParsesNetworkFields(t *testing.T) {
 	}
 	if info.AllowInternetAccess == nil || *info.AllowInternetAccess {
 		t.Fatalf("AllowInternetAccess=%#v, want false", info.AllowInternetAccess)
+	}
+}
+
+// ── SetTimeout ─────────────────────────────────────────────────────────────
+
+func TestSetTimeoutWireValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    int
+	}{
+		{"positive", 120 * time.Second, 120},
+		{"zero", 0, 0},
+		{"never_timeout", NeverTimeout, -1},
+		{"sub_second_rounds_up", 500 * time.Millisecond, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method=%s, want POST", r.Method)
+				}
+				expectedPath := "/sandboxes/" + testSandboxID + "/timeout"
+				if r.URL.Path != expectedPath {
+					t.Errorf("path=%s, want %s", r.URL.Path, expectedPath)
+				}
+				json.NewDecoder(r.Body).Decode(&got)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client := NewClient(Config{APIURL: server.URL})
+			sb := &Sandbox{client: client, SandboxID: testSandboxID}
+			ctx := context.Background()
+
+			if err := sb.SetTimeout(ctx, tt.timeout); err != nil {
+				t.Fatalf("SetTimeout: %v", err)
+			}
+			assertNumber(t, got, "timeout", float64(tt.want))
+		})
+	}
+}
+
+func TestSetTimeoutRejectsInvalidNegative(t *testing.T) {
+	client := NewClient(Config{APIURL: "http://unreachable"})
+	sb := &Sandbox{client: client, SandboxID: testSandboxID}
+
+	err := sb.SetTimeout(context.Background(), -5*time.Second)
+	if err == nil {
+		t.Fatal("SetTimeout(-5s) should return an error")
+	}
+	if !strings.Contains(err.Error(), "NeverTimeout") && !strings.Contains(err.Error(), "-1") {
+		t.Fatalf("error should mention NeverTimeout/-1, got: %v", err)
+	}
+}
+
+func TestSetTimeoutContextCancelled(t *testing.T) {
+	client := NewClient(Config{APIURL: "http://unreachable"})
+	sb := &Sandbox{client: client, SandboxID: testSandboxID}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := sb.SetTimeout(ctx, 60*time.Second)
+	if err == nil {
+		t.Fatal("SetTimeout with cancelled context returned nil error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+}
+
+func TestSetTimeoutNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"sandbox not found"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIURL: server.URL})
+	sb := &Sandbox{client: client, SandboxID: "sb-nonexistent"}
+	ctx := context.Background()
+
+	err := sb.SetTimeout(ctx, 60*time.Second)
+	if err == nil {
+		t.Fatal("SetTimeout for missing sandbox returned nil error")
+	}
+	if !errors.Is(err, ErrSandboxNotFound) {
+		t.Fatalf("err=%v, want ErrSandboxNotFound", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err=%v, want *APIError", err)
+	}
+}
+
+func TestSetTimeoutServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"message":"internal error"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{APIURL: server.URL})
+	sb := &Sandbox{client: client, SandboxID: testSandboxID}
+
+	err := sb.SetTimeout(context.Background(), 60*time.Second)
+	if err == nil {
+		t.Fatal("SetTimeout for 500 returned nil error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err=%v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("StatusCode=%d, want 500", apiErr.StatusCode)
 	}
 }

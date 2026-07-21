@@ -95,7 +95,7 @@ static __always_inline bool dns_response_learning_enabled(__u32 ifindex)
 	struct mvm_meta *mvm_meta;
 
 	mvm_meta = bpf_map_lookup_elem(&ifindex_to_mvmmeta, &ifindex);
-	return dns_policy_learning_enabled(mvm_meta);
+	return mvm_meta && (mvm_meta->dns_policy_flags & DNS_POLICY_FLAG_LEARNING_ENABLED);
 }
 
 /* Add an IPv4 A-record address as a temporary DNS-learned allow_out_v2 entry. */
@@ -160,6 +160,7 @@ static __always_inline bool dns_process_response_answer(struct __sk_buff *skb,
 		if (bpf_skb_load_bytes(skb, *cursor, &ip, sizeof(ip)))
 			return false;
 		ttl = bpf_ntohl(rr.ttl);
+		if (ttl < 300) ttl = 300;
 		dns_learn_response_ip(ifindex, ip, ttl, flags);
 	}
 
@@ -172,12 +173,9 @@ static __always_inline bool dns_process_response_answer(struct __sk_buff *skb,
 }
 
 /* Lookup the pending DNS query that authorizes this response. */
-static __always_inline struct dns_query_track_value *dns_lookup_response_query(__u32 ifindex,
-									 __u32 server_ip,
-									 __u16 source_port,
-									 __be16 dns_id,
-									 __u64 qname_hash,
-									 struct dns_query_track_key *track_key)
+static __always_inline struct dns_query_track_value *dns_lookup_response_query(
+	__u32 ifindex, __u32 server_ip, __u16 source_port, __be16 dns_id,
+	__u64 qname_hash, struct dns_query_track_key *track_key)
 {
 	track_key->ifindex = ifindex;
 	track_key->server_ip = server_ip;

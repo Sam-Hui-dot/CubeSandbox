@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -57,13 +58,14 @@ func (f *fakeRedis) snapshot() []recordedCall {
 }
 
 func TestSandboxLifecycleMeta_JSONRoundTrip(t *testing.T) {
+	timeout := 60
 	in := SandboxLifecycleMeta{
 		SandboxID:      "sbx-1",
 		TemplateID:     "tpl-1",
 		HostID:         "host-1",
 		HostIP:         "10.0.0.1",
 		InstanceType:   "cubebox",
-		TimeoutSeconds: 60,
+		TimeoutSeconds: &timeout,
 		AutoPause:      true,
 		AutoResume:     true,
 		CreatedAt:      1700000000000,
@@ -76,7 +78,9 @@ func TestSandboxLifecycleMeta_JSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	// TimeoutSeconds is a pointer now, so compare by value (DeepEqual) rather
+	// than == which would compare pointer identity.
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip mismatch: got %+v want %+v", out, in)
 	}
 }
@@ -85,9 +89,10 @@ func TestStore_PublishCreate_HappyPath(t *testing.T) {
 	r := &fakeRedis{}
 	s := NewStore(r)
 
+	timeout := 60
 	meta := &SandboxLifecycleMeta{
 		SandboxID:      "sbx-42",
-		TimeoutSeconds: 60,
+		TimeoutSeconds: &timeout,
 		AutoPause:      true,
 	}
 	s.PublishCreate(context.Background(), meta)
@@ -118,7 +123,7 @@ func TestStore_PublishCreate_HappyPath(t *testing.T) {
 	if err := json.Unmarshal(payloadBytes, &got); err != nil {
 		t.Fatalf("payload json: %v", err)
 	}
-	if got.SandboxID != "sbx-42" || !got.AutoPause || got.TimeoutSeconds != 60 {
+	if got.SandboxID != "sbx-42" || !got.AutoPause || got.TimeoutSeconds == nil || *got.TimeoutSeconds != 60 {
 		t.Fatalf("payload wrong: %+v", got)
 	}
 }
@@ -169,9 +174,108 @@ func TestStore_DisabledIsNoOp(t *testing.T) {
 
 	s.PublishCreate(context.Background(), &SandboxLifecycleMeta{SandboxID: "sbx-1"})
 	s.PublishDelete(context.Background(), "sbx-1")
+	s.PublishState(context.Background(), "sbx-1", StatePaused, "api")
 
 	if got := len(r.snapshot()); got != 0 {
 		t.Fatalf("disabled store should make zero calls, got %d", got)
+	}
+}
+
+func TestStore_PublishState_HappyPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		state string
+	}{
+		{"paused", StatePaused},
+		{"running", StateRunning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &fakeRedis{}
+			s := NewStore(r)
+
+			s.PublishState(context.Background(), "sbx-1", tc.state, "api")
+
+			calls := r.snapshot()
+			if len(calls) != 1 {
+				t.Fatalf("want single XADD, got %d: %+v", len(calls), calls)
+			}
+			c := calls[0]
+			if c.cmd != "XADD" || c.args[0] != EventStreamKey {
+				t.Fatalf("XADD target wrong: %+v", c)
+			}
+			// State events MUST NOT touch MetaKey.
+			for _, prev := range calls {
+				if prev.cmd == "HSET" || prev.cmd == "HDEL" {
+					t.Fatalf("state event must not mutate MetaKey: %+v", prev)
+				}
+			}
+			if c.args[5] != FieldOp || c.args[6] != OpState {
+				t.Fatalf("XADD op wrong: %+v", c.args)
+			}
+			if c.args[7] != FieldSandboxID || c.args[8] != "sbx-1" {
+				t.Fatalf("XADD sandbox_id wrong: %+v", c.args)
+			}
+			// Locate payload field.
+			var payloadBytes []byte
+			for i := 0; i < len(c.args); i++ {
+				if s, ok := c.args[i].(string); ok && s == FieldPayload && i+1 < len(c.args) {
+					if b, bok := c.args[i+1].([]byte); bok {
+						payloadBytes = b
+					}
+				}
+			}
+			if payloadBytes == nil {
+				t.Fatalf("payload not found in XADD args: %+v", c.args)
+			}
+			var got StatePayload
+			if err := json.Unmarshal(payloadBytes, &got); err != nil {
+				t.Fatalf("payload json: %v", err)
+			}
+			if got.State != tc.state {
+				t.Fatalf("payload state = %q, want %q", got.State, tc.state)
+			}
+			if got.Actor != ActorCubeMaster {
+				t.Fatalf("payload actor = %q, want %q", got.Actor, ActorCubeMaster)
+			}
+			if got.Source != "api" {
+				t.Fatalf("payload source = %q, want api", got.Source)
+			}
+		})
+	}
+}
+
+func TestStore_PublishState_InvalidState(t *testing.T) {
+	cases := []string{"", "pausing", "resuming", "PAUSED", "unknown"}
+	for _, state := range cases {
+		t.Run(state, func(t *testing.T) {
+			r := &fakeRedis{}
+			s := NewStore(r)
+			s.PublishState(context.Background(), "sbx-1", state, "api")
+			if got := len(r.snapshot()); got != 0 {
+				t.Fatalf("invalid state %q must not reach Redis, got %d calls", state, got)
+			}
+		})
+	}
+}
+
+func TestStore_PublishState_EmptySandboxID(t *testing.T) {
+	r := &fakeRedis{}
+	s := NewStore(r)
+	s.PublishState(context.Background(), "", StatePaused, "api")
+	if got := len(r.snapshot()); got != 0 {
+		t.Fatalf("empty sandbox id must not reach Redis, got %d calls", got)
+	}
+}
+
+func TestStore_PublishState_XADDFailureSwallowed(t *testing.T) {
+	r := &fakeRedis{failXADD: true}
+	s := NewStore(r)
+	// Must not panic and must not propagate the error.
+	s.PublishState(context.Background(), "sbx-1", StateRunning, "api")
+	calls := r.snapshot()
+	if len(calls) != 1 || calls[0].cmd != "XADD" {
+		t.Fatalf("expected single XADD attempt, got %+v", calls)
 	}
 }
 
@@ -180,16 +284,19 @@ func TestStore_NilGuards(t *testing.T) {
 	var s *Store
 	s.PublishCreate(context.Background(), &SandboxLifecycleMeta{SandboxID: "x"})
 	s.PublishDelete(context.Background(), "x")
+	s.PublishState(context.Background(), "x", StatePaused, "api")
 
 	s2 := NewStore(nil)
 	s2.PublishCreate(context.Background(), &SandboxLifecycleMeta{SandboxID: "x"})
 	s2.PublishDelete(context.Background(), "x")
+	s2.PublishState(context.Background(), "x", StatePaused, "api")
 
 	r := &fakeRedis{}
 	s3 := NewStore(r)
 	s3.PublishCreate(context.Background(), nil)
 	s3.PublishCreate(context.Background(), &SandboxLifecycleMeta{})
 	s3.PublishDelete(context.Background(), "")
+	s3.PublishState(context.Background(), "", StatePaused, "api")
 	if got := len(r.snapshot()); got != 0 {
 		t.Fatalf("nil/empty inputs must not reach Redis, got %d calls", got)
 	}

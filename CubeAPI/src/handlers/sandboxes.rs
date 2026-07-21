@@ -8,9 +8,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use validator::Validate;
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     logging::{LogEvent, LogLevel},
     models::{
         ApiError, ConnectSandbox, ListSandboxesQuery, ListSandboxesV2Query, NewSandbox,
@@ -198,6 +199,13 @@ pub async fn create_sandbox(
     responses(
         (status = 204, description = "Sandbox deleted"),
         (status = 404, description = "Sandbox not found", body = ApiError),
+        (status = 408, description = "The existing standard API request timeout expired before the synchronous delete completed"),
+        (status = 409, description = "Paused sandbox cannot be admitted for internal resume because node capacity or resource metadata is unavailable", body = ApiError),
+        (status = 503, description = "Sandbox is pausing, another lifecycle operation is in progress, the Cubelet RPC has too little remaining time, or its internal resume could not be completed", body = ApiError,
+            headers(
+                ("Retry-After" = u64, description = "Seconds a client should wait before retrying DELETE")
+            )
+        ),
         (status = 500, description = "Unexpected backend error", body = ApiError)
     )
 )]
@@ -421,6 +429,9 @@ pub async fn set_sandbox_timeout(
     Path(sandbox_id): Path<String>,
     Json(body): Json<SetTimeoutRequest>,
 ) -> AppResult<impl IntoResponse> {
+    body.validate()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
     state
         .logger
         .log(

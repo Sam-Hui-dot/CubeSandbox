@@ -161,7 +161,9 @@ func flushInnerMapWithValue(outerMap *ebpf.Map, ifindex uint32, value any) error
 	var key lpmKey
 	iter := inner.Iterate()
 	for iter.Next(&key, value) {
-		_ = inner.Delete(&key)
+		if err := inner.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("inner map delete failed: %w", err)
+		}
 	}
 	if err := iter.Err(); err != nil {
 		return fmt.Errorf("inner map iterate failed: %w", err)
@@ -205,6 +207,33 @@ func cleanupNetPolicy(ifindex uint32) error {
 	defer denyOut.Close()
 
 	return flushInnerMap(denyOut, ifindex)
+}
+
+// PrepareTAPDevicePolicy clears per-sandbox policy residue, then installs
+// policy entries that are invariant for a TAP while it sits in the free pool.
+// Per-sandbox policy application can then skip rewriting these default
+// private/link-local deny ranges on every create.
+func PrepareTAPDevicePolicy(ifindex uint32) error {
+	if err := cleanupNetPolicy(ifindex); err != nil {
+		return err
+	}
+	if err := cleanupDNSAllow(ifindex); err != nil {
+		return err
+	}
+
+	denyOut, err := loadPinnedMap(MapNameDenyOut)
+	if err != nil {
+		return err
+	}
+	defer denyOut.Close()
+
+	if err := ensureDenyOutInnerMap(denyOut, ifindex); err != nil {
+		return err
+	}
+	if err := populateInnerMap(denyOut, ifindex, alwaysDeniedSandboxEntries); err != nil {
+		return fmt.Errorf("populate default %s failed: %w", MapNameDenyOut, err)
+	}
+	return nil
 }
 
 // parseCIDR parses a CIDR string (e.g. "10.0.0.0/8") or a plain IP
@@ -322,7 +351,6 @@ func buildNetPolicyPlan(opts MVMOptions) (*netPolicyPlan, error) {
 				return nil, err
 			}
 		}
-		denyOutEntries = appendDenyOutPolicyEntries(denyOutEntries, alwaysDeniedSandboxEntries)
 	}
 	if err != nil {
 		return nil, err
@@ -358,6 +386,15 @@ func appendDenyOutPolicyEntries(dst, src []denyOutPolicyEntry) []denyOutPolicyEn
 	return dst
 }
 
+func effectiveDenyOutEntriesForReplace(plan *netPolicyPlan) []denyOutPolicyEntry {
+	if plan == nil {
+		return nil
+	}
+	entries := make([]denyOutPolicyEntry, len(plan.denyOutEntries), len(plan.denyOutEntries)+len(alwaysDeniedSandboxEntries))
+	copy(entries, plan.denyOutEntries)
+	return appendDenyOutPolicyEntries(entries, alwaysDeniedSandboxEntries)
+}
+
 func validateNetPolicyPlan(plan *netPolicyPlan) error {
 	if err := validateNetPolicyEntryCount("network.allow_out_v2", len(plan.allowOutEntries), maxNetPolicyEntries); err != nil {
 		return err
@@ -365,7 +402,7 @@ func validateNetPolicyPlan(plan *netPolicyPlan) error {
 	if err := validateNetPolicyEntryCount("network.dns_allow", len(plan.dnsAllowRules), maxDNSAllowDomains); err != nil {
 		return err
 	}
-	return validateNetPolicyEntryCount("network.deny_out", len(plan.denyOutEntries), maxNetPolicyEntries)
+	return validateNetPolicyEntryCount("network.deny_out", len(effectiveDenyOutEntriesForReplace(plan)), maxNetPolicyEntries)
 }
 
 func validateNetPolicyEntryCounts(allowOutCIDRs, l7AllowOutCIDRs, dnsAllowDomains, l7DNSAllowDomains, denyOut []string) error {
@@ -615,7 +652,8 @@ func netPolicyValueV2Expired(value netPolicyValueV2, now uint64) bool {
 //   - L7AllowOut IP/CIDR targets are inserted into allow_out_v2 with the L7 flag.
 //   - AllowOut domain targets are inserted into dns_allow inner map.
 //   - L7AllowOut domain targets are inserted into dns_allow with the L7 flag.
-//   - DenyOut always includes alwaysDeniedSandboxCIDRs.
+//   - Default private/link-local DenyOut ranges are preloaded when a TAP enters
+//     the free pool. Replace paths replay them after flushing policy maps.
 //   - AllowInternetAccess=false: DenyOut is set to "0.0.0.0/0" (deny all).
 func applyNetPolicy(ifindex uint32, opts MVMOptions) error {
 	return applyNetPolicyWithMode(ifindex, opts, false)
@@ -658,7 +696,11 @@ func applyNetPolicyWithMode(ifindex uint32, opts MVMOptions, replace bool) error
 		return fmt.Errorf("populate %s failed: %w", MapNameDNSAllow, err)
 	}
 
-	if replace || len(plan.denyOutEntries) > 0 {
+	denyOutEntries := plan.denyOutEntries
+	if replace {
+		denyOutEntries = effectiveDenyOutEntriesForReplace(plan)
+	}
+	if replace || len(denyOutEntries) > 0 {
 		denyOutMap, err := loadPinnedMap(MapNameDenyOut)
 		if err != nil {
 			return err
@@ -673,7 +715,7 @@ func applyNetPolicyWithMode(ifindex uint32, opts MVMOptions, replace bool) error
 				return fmt.Errorf("flush %s failed: %w", MapNameDenyOut, err)
 			}
 		}
-		err = populateInnerMap(denyOutMap, ifindex, plan.denyOutEntries)
+		err = populateInnerMap(denyOutMap, ifindex, denyOutEntries)
 		if err != nil {
 			return fmt.Errorf("populate %s failed: %w", MapNameDenyOut, err)
 		}

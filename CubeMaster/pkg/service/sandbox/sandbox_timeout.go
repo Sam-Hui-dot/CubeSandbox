@@ -42,9 +42,13 @@ func SetTimeout(ctx context.Context, req *types.SetTimeoutRequest) (rsp *types.S
 		rsp.Ret.RetMsg = "should provide sandboxID"
 		return
 	}
-	if req.Timeout <= 0 {
+	if ret := normalizeSandboxIDInReq(ctx, &req.SandboxID); ret != nil {
+		rsp.Ret = ret
+		return
+	}
+	if req.Timeout < -1 {
 		rsp.Ret.RetCode = int(errorcode.ErrorCode_MasterParamsError)
-		rsp.Ret.RetMsg = "timeout must be positive (seconds)"
+		rsp.Ret.RetMsg = "timeout must be >= -1 (use -1 for never timeout)"
 		return
 	}
 
@@ -84,6 +88,10 @@ func Refresh(ctx context.Context, req *types.RefreshSandboxRequest) (rsp *types.
 	if req.SandboxID == "" {
 		rsp.Ret.RetCode = int(errorcode.ErrorCode_MasterParamsError)
 		rsp.Ret.RetMsg = "should provide sandboxID"
+		return
+	}
+	if ret := normalizeSandboxIDInReq(ctx, &req.SandboxID); ret != nil {
+		rsp.Ret = ret
 		return
 	}
 	if req.Duration <= 0 {

@@ -187,9 +187,9 @@ pub struct NewSandbox {
     #[serde(rename = "templateID")]
     pub template_id: String,
 
-    #[validate(range(min = 0))]
-    #[serde(default = "default_timeout")]
-    pub timeout: i32,
+    /// Optional idle TTL in seconds. See docs/guide/lifecycle.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<i32>,
 
     /// Sandbox lifecycle configuration. Maps to e2b's `lifecycle` object so
     /// callers that already speak e2b can pass through unchanged. Absent
@@ -229,10 +229,6 @@ pub struct NewSandbox {
 
     #[serde(rename = "volumeMounts", skip_serializing_if = "Option::is_none")]
     pub volume_mounts: Option<Vec<SandboxVolumeMount>>,
-}
-
-fn default_timeout() -> i32 {
-    15
 }
 
 // ─── Sandbox — create / connect response ──────────────────────────────────
@@ -281,8 +277,10 @@ pub struct ListedSandbox {
     pub client_id: String,
     #[serde(rename = "startedAt")]
     pub started_at: DateTime<Utc>,
-    #[serde(rename = "endAt")]
-    pub end_at: DateTime<Utc>,
+    /// Projected next-timeout instant. Omitted for never-timeout sandboxes
+    /// (no deadline) rather than being misreported as equal to startedAt.
+    #[serde(rename = "endAt", skip_serializing_if = "Option::is_none")]
+    pub end_at: Option<DateTime<Utc>>,
     #[serde(rename = "cpuCount")]
     pub cpu_count: i32,
     #[serde(rename = "memoryMB")]
@@ -313,8 +311,10 @@ pub struct SandboxDetail {
     pub client_id: String,
     #[serde(rename = "startedAt")]
     pub started_at: DateTime<Utc>,
-    #[serde(rename = "endAt")]
-    pub end_at: DateTime<Utc>,
+    /// Projected next-timeout instant. Omitted for never-timeout sandboxes
+    /// (no deadline) rather than being misreported as equal to startedAt.
+    #[serde(rename = "endAt", skip_serializing_if = "Option::is_none")]
+    pub end_at: Option<DateTime<Utc>>,
     #[serde(rename = "envdVersion")]
     pub envd_version: String,
     #[serde(rename = "envdAccessToken", skip_serializing_if = "Option::is_none")]
@@ -342,8 +342,9 @@ pub struct SandboxDetail {
 #[derive(Debug, Deserialize, ToSchema)]
 #[allow(dead_code)]
 pub struct ResumedSandbox {
-    #[serde(default = "default_timeout")]
-    pub timeout: i32,
+    /// Idle timeout in seconds; None when the client did not send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<i32>,
     #[serde(rename = "autoPause", default)]
     pub auto_pause: bool,
 }
@@ -351,8 +352,9 @@ pub struct ResumedSandbox {
 /// Request body for POST /sandboxes/{id}/connect.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct ConnectSandbox {
-    #[validate(range(min = 0))]
-    pub timeout: i32,
+    /// Idle timeout in seconds; None when the client did not send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<i32>,
 }
 
 /// Request body for POST /sandboxes/{id}/snapshots.
@@ -497,8 +499,25 @@ fn default_log_limit() -> i32 {
 /// Request body for POST /sandboxes/{id}/timeout
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct SetTimeoutRequest {
-    #[validate(range(min = 0))]
+    #[validate(custom(function = "validate_timeout_value"))]
     pub timeout: i32,
+}
+
+/// Validates the timeout value for SetTimeoutRequest.
+///
+/// Accepts:
+/// - `>= 0`: normal TTL in seconds (0 = immediate expire)
+/// - `-1`:  never-timeout sentinel (see `NEVER_TIMEOUT` in SDK)
+///
+/// Rejects all other negative values.
+fn validate_timeout_value(timeout: i32) -> Result<(), validator::ValidationError> {
+    if timeout >= 0 || timeout == -1 {
+        Ok(())
+    } else {
+        Err(validator::ValidationError::new(
+            "timeout_must_be_non_negative_or_never",
+        ))
+    }
 }
 
 /// Request body for POST /sandboxes/{id}/refreshes
@@ -536,7 +555,39 @@ fn default_page_limit() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{NewSandbox, SandboxNetworkConfig};
+    use super::{
+        CreateTemplateRequest, NewSandbox, SandboxNetworkConfig, SetTimeoutRequest,
+        TemplateAliasLookupResponse,
+    };
+    use validator::Validate;
+
+    #[test]
+    fn set_timeout_request_rejects_invalid_negative_values() {
+        // Only -1 (NEVER_TIMEOUT) is accepted as a valid negative value.
+        for timeout in [-2, -100, -999] {
+            let req = SetTimeoutRequest { timeout };
+            assert!(
+                req.validate().is_err(),
+                "timeout={timeout} should be rejected (only -1 is valid negative)"
+            );
+        }
+    }
+
+    #[test]
+    fn set_timeout_request_accepts_never_timeout() {
+        let req = SetTimeoutRequest { timeout: -1 };
+        req.validate()
+            .unwrap_or_else(|e| panic!("NEVER_TIMEOUT (-1) should be valid: {e}"));
+    }
+
+    #[test]
+    fn set_timeout_request_accepts_zero_and_positive() {
+        for timeout in [0, 60, 3600] {
+            let req = SetTimeoutRequest { timeout };
+            req.validate()
+                .unwrap_or_else(|e| panic!("timeout={timeout} should be valid: {e}"));
+        }
+    }
 
     #[test]
     fn sandbox_network_config_accepts_snake_case_policy_fields() {
@@ -571,6 +622,31 @@ mod tests {
             Some("value")
         );
     }
+
+    #[test]
+    fn create_template_request_accepts_name_and_alias() {
+        let req: CreateTemplateRequest = serde_json::from_value(serde_json::json!({
+            "name": "stable-python:v1",
+            "alias": "legacy-python",
+            "image": "python:3.11"
+        }))
+        .expect("create template request should deserialize");
+
+        assert_eq!(req.name.as_deref(), Some("stable-python:v1"));
+        assert_eq!(req.alias.as_deref(), Some("legacy-python"));
+    }
+
+    #[test]
+    fn template_alias_lookup_response_serializes_e2b_shape() {
+        let resp = TemplateAliasLookupResponse {
+            template_id: "tpl-abc".to_string(),
+            public: true,
+        };
+
+        let json = serde_json::to_value(resp).expect("response should serialize");
+        assert_eq!(json["templateID"], "tpl-abc");
+        assert_eq!(json["public"], true);
+    }
 }
 
 // ─── Templates ─────────────────────────────────────────────────────────────
@@ -590,6 +666,7 @@ pub struct ListTemplatesQuery {
 pub struct TemplateSummary {
     #[serde(rename = "templateID")]
     pub template_id: String,
+    pub public: bool,
     #[serde(rename = "instanceType", skip_serializing_if = "Option::is_none")]
     pub instance_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -604,6 +681,9 @@ pub struct TemplateSummary {
     /// Latest create/rebuild job id for the template.
     #[serde(rename = "jobID", skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// E2B template aliases. CubeSandbox has no namespace model, so this
+    /// mirrors the stable alias when one is configured.
+    pub aliases: Vec<String>,
 }
 
 /// Detailed template response (GET /templates/:id).
@@ -611,6 +691,7 @@ pub struct TemplateSummary {
 pub struct TemplateDetail {
     #[serde(rename = "templateID")]
     pub template_id: String,
+    pub public: bool,
     #[serde(rename = "instanceType", skip_serializing_if = "Option::is_none")]
     pub instance_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -618,6 +699,8 @@ pub struct TemplateDetail {
     pub status: String,
     #[serde(rename = "lastError", skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
     pub replicas: Vec<serde_json::Value>,
     #[serde(rename = "createRequest", skip_serializing_if = "Option::is_none")]
     pub create_request: Option<serde_json::Value>,
@@ -633,6 +716,9 @@ pub struct TemplateDetail {
     /// Latest create/rebuild job id for the template.
     #[serde(rename = "jobID", skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// E2B template aliases. CubeSandbox has no namespace model, so this
+    /// mirrors the stable alias when one is configured.
+    pub aliases: Vec<String>,
 }
 
 /// Body for POST /templates (create from image).
@@ -643,6 +729,13 @@ pub struct CreateTemplateRequest {
     #[serde(rename = "templateID", default)]
     #[allow(dead_code)]
     pub template_id: String,
+    /// E2B v3 template name. A tag suffix after ':' is accepted by CubeAPI but
+    /// only the name portion is forwarded as the CubeMaster alias.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Deprecated E2B template alias. Used when `name` is absent or blank.
+    #[serde(default)]
+    pub alias: Option<String>,
     #[serde(rename = "instanceType", default)]
     pub instance_type: Option<String>,
     /// Container image reference, e.g. `registry.example.com/code:latest`.
@@ -699,6 +792,9 @@ pub struct CreateTemplateRequest {
     /// Denied outbound CIDRs for CubeVS egress policy.
     #[serde(rename = "denyOut", default)]
     pub deny_out: Option<Vec<String>>,
+    /// Enable ivshmem when building the template snapshot.
+    #[serde(rename = "enableIvshmem", default)]
+    pub enable_ivshmem: Option<bool>,
     /// Whether CubeMaster bakes the CubeEgress root CA into the template rootfs.
     /// Omitted or null defaults to true on CubeMaster.
     #[serde(rename = "with_cube_ca", default)]
@@ -710,6 +806,13 @@ pub struct CreateTemplateRequest {
 pub struct RebuildTemplateRequest {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TemplateAliasLookupResponse {
+    #[serde(rename = "templateID")]
+    pub template_id: String,
+    pub public: bool,
 }
 
 /// Job envelope returned by create / rebuild.
@@ -959,4 +1062,60 @@ pub struct VersionMatrixView {
     pub control_plane: ControlPlaneVersionView,
     pub components: Vec<ComponentMatrixRowView>,
     pub nodes: Vec<NodeVersionRowView>,
+}
+
+// ─── Volume API models ──────────────────────────────────────────────────────
+
+/// Maximum length of a customer-supplied volume `name` (matches `t_cube_volume.name`).
+pub const MAX_VOLUME_NAME_LEN: usize = 128;
+
+/// Request body for POST /volumes.
+///
+/// `name` must match `^[a-zA-Z0-9_-]+$` and be at most [`MAX_VOLUME_NAME_LEN`] characters
+/// (validated in the handler).
+/// `driver` selects the Controller Hook Plugin in CubeMaster; omit to use the
+/// default plugin configured in CubeMaster.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct NewVolume {
+    /// Human-readable name for the volume. Optional;
+    /// if omitted a UUIDv4 is generated and used as both name and volume_id.
+    #[serde(default)]
+    pub name: String,
+    /// Plugin/driver to use, e.g. "nfs", "cos", "host-mount".
+    /// Omit to use CubeMaster's default plugin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+}
+
+impl NewVolume {
+    /// Returns true iff `name` matches `^[a-zA-Z0-9_-]+$` and is within length limit.
+    pub fn name_is_valid(&self) -> bool {
+        !self.name.is_empty()
+            && self.name.len() <= MAX_VOLUME_NAME_LEN
+            && self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    }
+}
+
+/// Volume descriptor returned in list responses (no token).
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct Volume {
+    #[serde(rename = "volumeID")]
+    pub volume_id: String,
+    pub name: String,
+}
+
+/// Volume descriptor with auth token — returned on create / get-single.
+/// E2B SDK requires `token` to always be present (non-optional); use empty
+/// string when the plugin does not return a token.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct VolumeAndToken {
+    #[serde(rename = "volumeID")]
+    pub volume_id: String,
+    pub name: String,
+    /// Auth token returned by the volume plugin. Empty string when not applicable.
+    #[serde(default)]
+    pub token: String,
 }

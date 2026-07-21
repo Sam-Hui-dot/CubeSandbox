@@ -19,14 +19,29 @@ env:
   VMLINUX_CACHE_PATH: kernel-cache/vmlinux
   VMLINUX_RELEASE_PATH: deploy/one-click/assets/kernel-artifacts/vmlinux
   KERNEL_TAG: 6.6.119-49.6
-  PVM_KERNEL_TAG: 6.6.69-1.cubesandbox
+  PVM_KERNEL_TAG: 6.6.69-1.2.cubesandbox
   PVM_VMLINUX_CACHE_PATH: kernel-cache/vmlinux-pvm
   PVM_VMLINUX_RELEASE_PATH: deploy/one-click/assets/kernel-artifacts/vmlinux-pvm
 
 jobs:
+  # Fail fast when a hard-coded component image tag in the bundle (terraform
+  # defaults, cube-egress launcher, env examples, ...) does not match the git
+  # tag being released. Gating the whole pipeline on this guarantees the
+  # published bundle never references an image tag that was not built/pushed.
+  verify_versions:
+    name: Verify release image tags
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check hard-coded image tags match the release tag
+        run: scripts/bump-image.sh --check "${GITHUB_REF_NAME}"
+
   build_pvm_guest_vmlinux:
     name: Build PVM guest vmlinux for release (x86_64)
     runs-on: arc-runner-set-16c32g-containerd
+    needs: verify_versions
     container:
       image: ubuntu:24.04
 
@@ -112,6 +127,7 @@ jobs:
   ensure_release:
     name: Ensure GitHub Release exists
     runs-on: ubuntu-latest
+    needs: verify_versions
 
     steps:
       - name: Ensure GitHub Release exists
@@ -130,6 +146,7 @@ jobs:
     needs:
       - ensure_release
       - build_pvm_guest_vmlinux
+      - release_docker_images
     env:
       KERNEL_ARCH: x86_64
       BUNDLE_ARCH: amd64
@@ -345,7 +362,9 @@ jobs:
   release_arm64:
     name: Release one-click bundle (arm64)
     runs-on: ubuntu-24.04-arm
-    needs: ensure_release
+    needs:
+      - ensure_release
+      - release_docker_images
     env:
       KERNEL_ARCH: aarch64
       BUNDLE_ARCH: arm64
@@ -526,3 +545,20 @@ jobs:
             "vmlinux-release-assets/vmlinux-${BUNDLE_ARCH}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
+
+  # Build and push release component images via the reusable workflow (also
+  # runnable manually from Actions → Release Docker Images). release_amd64 /
+  # release_arm64 depend on this job so the one-click bundle is not uploaded to
+  # GitHub Release until every component image tag is published.
+  release_docker_images:
+    name: Build release docker images
+    needs: verify_versions
+    if: github.repository == 'TencentCloud/CubeSandbox'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release-docker-images.yml
+    with:
+      image_tag: ${{ github.ref_name }}
+      components: all
+    secrets: inherit

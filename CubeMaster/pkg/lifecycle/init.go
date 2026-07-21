@@ -44,6 +44,8 @@ func Init(ctx context.Context) error {
 	sandbox.RegisterAfterDestroySandboxSuccessHook(onAfterDestroy)
 	task.RegisterAfterDestroyTaskSuccessHook(onAfterDestroy)
 
+	sandbox.RegisterAfterUpdateSandboxSuccessHook(onAfterUpdate)
+
 	sandbox.SetTimeoutProvider(&storeTimeoutProvider{store: store})
 
 	log.G(ctx).Infof("lifecycle: auto-pause metadata channel ready (key=%s, stream=%s)",
@@ -73,11 +75,20 @@ func (p *storeTimeoutProvider) RefreshTimeout(ctx context.Context, sandboxID str
 	}
 
 	now := time.Now().UnixMilli()
-	meta.TimeoutSeconds = timeoutSeconds
+	ts := timeoutSeconds
+	meta.TimeoutSeconds = &ts
 	meta.CreatedAt = now
-	meta.EndAt = now + int64(timeoutSeconds)*1000
+	meta.EndAt = projectedEndAt(now, timeoutSeconds)
 	p.store.PublishUpdate(ctx, meta)
 	return meta.EndAt, nil
+}
+
+// projectedEndAt maps idle TTL to EndAt (unix ms). See docs/guide/lifecycle.md.
+func projectedEndAt(nowMs int64, timeoutSeconds int) int64 {
+	if timeoutSeconds < 0 {
+		return 0
+	}
+	return nowMs + int64(timeoutSeconds)*1000
 }
 
 // LookupEndAt reads the latest meta.EndAt straight from the lifecycle snapshot in Redis.
@@ -95,8 +106,8 @@ func (p *storeTimeoutProvider) LookupEndAt(ctx context.Context, sandboxID string
 	if meta.EndAt > 0 {
 		return meta.EndAt, nil
 	}
-	if meta.CreatedAt > 0 && meta.TimeoutSeconds > 0 {
-		return meta.CreatedAt + int64(meta.TimeoutSeconds)*1000, nil
+	if meta.CreatedAt > 0 && meta.TimeoutSeconds != nil && *meta.TimeoutSeconds > 0 {
+		return meta.CreatedAt + int64(*meta.TimeoutSeconds)*1000, nil
 	}
 	return 0, nil
 }
@@ -114,16 +125,22 @@ func onAfterCreate(ctx context.Context, sandboxID, hostID, hostIP string, req *s
 		return nil
 	}
 	now := time.Now().UnixMilli()
+	// ConstructCubeletReq normalizes req.Timeout before create; guard nil defensively.
+	timeoutSeconds := sandboxtypes.NeverTimeout
+	if req.Timeout != nil {
+		timeoutSeconds = *req.Timeout
+	}
+	ts := timeoutSeconds
 	meta := &SandboxLifecycleMeta{
 		SandboxID:      sandboxID,
 		HostID:         hostID,
 		HostIP:         hostIP,
 		InstanceType:   req.InstanceType,
-		TimeoutSeconds: req.Timeout,
+		TimeoutSeconds: &ts,
 		AutoPause:      req.AutoPause,
 		AutoResume:     req.AutoResume,
 		CreatedAt:      now,
-		EndAt:          now + int64(req.Timeout)*1000,
+		EndAt:          projectedEndAt(now, timeoutSeconds),
 	}
 	if req.Annotations != nil {
 		// Template ID is conventionally carried via annotations from CubeAPI;
@@ -141,4 +158,34 @@ func onAfterDestroy(ctx context.Context, sandboxID string) error {
 		store.PublishDelete(ctx, sandboxID)
 	}
 	return nil
+}
+
+// PublishStateDefault is the public entry point for callers that don't hold a
+// *Store reference to announce a pause / resume transition to the CLM.
+// Safe to call when lifecycle is disabled or Redis is unreachable — the
+// underlying Store swallows those cases.
+func PublishStateDefault(ctx context.Context, sandboxID, state, source string) {
+	if store := getDefaultStore(); store != nil {
+		store.PublishState(ctx, sandboxID, state, source)
+	}
+}
+
+// onAfterUpdate maps a successful pause / resume action to the corresponding
+// terminal state and forwards it to the CLM via the events stream.
+// Registered with sandbox.RegisterAfterUpdateSandboxSuccessHook in Init.
+//
+// Unknown actions are ignored (the update handler already validates that
+// action ∈ {"pause","resume"}; this is defence-in-depth against future
+// action codes reaching the hook chain without a schema update here).
+func onAfterUpdate(ctx context.Context, sandboxID, _ /*instanceType*/, action, _ /*requestID*/ string) {
+	var state string
+	switch action {
+	case "pause":
+		state = StatePaused
+	case "resume":
+		state = StateRunning
+	default:
+		return
+	}
+	PublishStateDefault(ctx, sandboxID, state, "api")
 }
