@@ -6,17 +6,19 @@ package cube
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	cubebox "github.com/tencentcloud/CubeSandbox/CubeMaster/api/services/cubebox/v1"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/cubelet"
@@ -25,8 +27,8 @@ import (
 )
 
 const (
-	terminalRelayHeader           = "X-Cube-Terminal-Relay"
-	terminalRelayHeaderValue      = "cube-api"
+	terminalGatewayTokenHeader    = "X-Cube-Terminal-Token"
+	terminalGatewayTokenEnv       = "CUBE_TERMINAL_GATEWAY_TOKEN"
 	terminalWebSocketFrameLimit   = 256 * 1024
 	terminalOpenTimeout           = 10 * time.Second
 	terminalWebSocketWriteTimeout = 15 * time.Second
@@ -37,12 +39,21 @@ const (
 var terminalUpgrader = websocket.Upgrader{
 	ReadBufferSize:  32 * 1024,
 	WriteBufferSize: 32 * 1024,
-	// CubeAPI's server-to-server client sends no Origin. A browser cannot add
-	// the relay header, so both checks are required before terminal access.
-	CheckOrigin: func(r *http.Request) bool {
-		return r.Header.Get("Origin") == "" &&
-			r.Header.Get(terminalRelayHeader) == terminalRelayHeaderValue
-	},
+	// Only CubeOps may connect to this internal endpoint. Browsers cannot add
+	// the shared-token header, and server-to-server requests send no Origin.
+	CheckOrigin: terminalGatewayAllowed,
+}
+
+func terminalGatewayAllowed(r *http.Request) bool {
+	if r == nil || r.Header.Get("Origin") != "" {
+		return false
+	}
+	expected := os.Getenv(terminalGatewayTokenEnv)
+	provided := r.Header.Get(terminalGatewayTokenHeader)
+	if expected == "" || len(expected) != len(provided) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) == 1
 }
 
 type terminalOpenControl struct {

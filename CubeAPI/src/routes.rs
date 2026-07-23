@@ -18,7 +18,7 @@ use tower_http::{
 };
 
 use crate::{
-    handlers::{health, sandboxes, snapshots, templates, terminal, volumes},
+    handlers::{health, sandboxes, snapshots, templates, volumes},
     middleware::{auth::unified_auth, rate_limit::rate_limit},
     state::AppState,
 };
@@ -109,18 +109,9 @@ fn build_sandbox_routes(state: &AppState, auth_configured: bool) -> Router<AppSt
             "/sandboxes/:sandboxID/connect",
             post(sandboxes::connect_sandbox),
         )
-        .route(
-            "/sandboxes/:sandboxID/terminal/tickets",
-            post(terminal::create_terminal_ticket),
-        )
         .route("/snapshots", get(snapshots::list_snapshots));
 
-    let terminal_ws_routes = Router::new().route(
-        "/sandboxes/:sandboxID/terminal/ws",
-        get(terminal::terminal_websocket),
-    );
-
-    terminal_ws_routes.merge(with_auth_and_rate_limit(routes, state, auth_configured))
+    with_auth_and_rate_limit(routes, state, auth_configured)
 }
 
 /// Sandbox-rooted routes that must run on the long (240 s) budget.
@@ -197,7 +188,7 @@ fn with_auth(
     auth_configured: bool,
 ) -> Router<AppState> {
     if auth_configured {
-        routes.route_layer(middleware::from_fn_with_state(state.clone(), unified_auth))
+        routes.layer(middleware::from_fn_with_state(state.clone(), unified_auth))
     } else {
         routes
     }
@@ -210,8 +201,8 @@ fn with_auth_and_rate_limit(
 ) -> Router<AppState> {
     if auth_configured {
         routes
-            .route_layer(middleware::from_fn_with_state(state.clone(), rate_limit))
-            .route_layer(middleware::from_fn_with_state(state.clone(), unified_auth))
+            .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+            .layer(middleware::from_fn_with_state(state.clone(), unified_auth))
     } else {
         routes
     }
@@ -248,15 +239,6 @@ mod tests {
     async fn test_server() -> TestServer {
         let mut config = ServerConfig::default();
         config.cubemaster_url = "http://127.0.0.1:9".to_string();
-
-        let state = AppState::new(config, arc(NoopLogger)).await;
-        TestServer::new(build_router(state)).expect("router should build")
-    }
-
-    async fn auth_configured_test_server() -> TestServer {
-        let mut config = ServerConfig::default();
-        config.cubemaster_url = "http://127.0.0.1:9".to_string();
-        config.auth_callback_url = Some("http://127.0.0.1:9/auth".to_string());
 
         let state = AppState::new(config, arc(NoopLogger)).await;
         TestServer::new(build_router(state)).expect("router should build")
@@ -360,22 +342,6 @@ mod tests {
             resp.status_code(),
             StatusCode::NOT_FOUND,
             "alias route should be mounted as its own route, not swallowed by /templates/:templateID"
-        );
-    }
-
-    #[tokio::test]
-    async fn terminal_ticket_route_stays_on_authenticated_http_surface() {
-        let server = auth_configured_test_server().await;
-
-        let resp = server
-            .post("/sandboxes/sbx/terminal/tickets")
-            .json(&serde_json::json!({}))
-            .await;
-
-        assert_eq!(resp.status_code(), StatusCode::UNAUTHORIZED);
-        assert!(
-            resp.text().contains("Missing authentication"),
-            "ticket creation should be rejected by the standard auth layer"
         );
     }
 

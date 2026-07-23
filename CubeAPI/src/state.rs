@@ -5,7 +5,6 @@
 use crate::cubemaster::CubeMasterClient;
 use crate::logging::ArcLogger;
 use crate::services::AppServices;
-use crate::terminal::{TerminalSessionStore, TerminalTicketStore};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -18,23 +17,17 @@ pub struct AppState {
     /// Per-API-key rate limiter (token bucket).
     pub rate_limiter: Arc<DefaultKeyedRateLimiter<String>>,
 
+    /// Shared reqwest connection pool.
+    pub http_client: reqwest::Client,
+
     /// Shared business services built on top of CubeMaster.
     pub services: AppServices,
-
-    /// Shared HTTP client used by callbacks and AgentHub helpers.
-    pub http_client: reqwest::Client,
 
     /// Structured event logger (fan-out to all configured backends).
     pub logger: ArcLogger,
 
     /// Server config snapshot.
     pub config: Arc<crate::config::ServerConfig>,
-
-    /// Short-lived Web Terminal tickets consumed by WebSocket upgrades.
-    pub terminal_tickets: TerminalTicketStore,
-
-    /// Active Web Terminal sessions and lifecycle policy.
-    pub terminal_sessions: TerminalSessionStore,
 }
 
 impl AppState {
@@ -57,12 +50,10 @@ impl AppState {
 
         Self {
             rate_limiter,
-            services,
             http_client,
+            services,
             logger,
             config: Arc::new(config),
-            terminal_tickets: TerminalTicketStore::default(),
-            terminal_sessions: TerminalSessionStore::from_env(),
         }
     }
 }

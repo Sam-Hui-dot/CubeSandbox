@@ -1,3 +1,8 @@
+---
+# Copyright (c) 2026 Tencent Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+
 openapi: 3.1.0
 info:
   title: CubeAPI
@@ -271,88 +276,6 @@ paths:
                 $ref: '#/components/schemas/ApiError'
         '500':
           description: Unexpected backend error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-  /sandboxes/{sandboxID}/terminal/tickets:
-    post:
-      tags:
-      - handlers::terminal
-      operationId: create_terminal_ticket
-      parameters:
-      - name: sandboxID
-        in: path
-        description: Sandbox identifier
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/TerminalTicketRequest'
-        required: true
-      responses:
-        '201':
-          description: Short-lived terminal WebSocket ticket
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TerminalTicketResponse'
-        '400':
-          description: Invalid terminal request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-        '404':
-          description: Sandbox or container not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-        '409':
-          description: Sandbox or container is not loggable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-        '500':
-          description: Unexpected backend error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-  /sandboxes/{sandboxID}/terminal/ws:
-    get:
-      tags:
-      - handlers::terminal
-      operationId: terminal_websocket
-      parameters:
-      - name: sandboxID
-        in: path
-        description: Sandbox identifier
-        required: true
-        schema:
-          type: string
-      - name: ticket
-        in: query
-        description: Short-lived one-time terminal ticket
-        required: true
-        schema:
-          type: string
-      responses:
-        '101':
-          description: Terminal WebSocket upgrade
-        '401':
-          description: Unauthorized
           content:
             application/json:
               schema:
@@ -1123,12 +1046,6 @@ components:
           - 'null'
         clientID:
           type: string
-        containers:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/SandboxContainer'
         cpuCount:
           type: integer
           format: int32
@@ -1348,34 +1265,6 @@ components:
           type:
           - string
           - 'null'
-    SandboxContainer:
-      type: object
-      description: Runtime container visible inside a sandbox.
-      required:
-      - containerID
-      - state
-      properties:
-        containerID:
-          type: string
-        image:
-          type:
-          - string
-          - 'null'
-        kind:
-          type:
-          - string
-          - 'null'
-        name:
-          type:
-          - string
-          - 'null'
-        startedAt:
-          type:
-          - string
-          - 'null'
-          format: date-time
-        state:
-          $ref: '#/components/schemas/SandboxState'
     SandboxDetail:
       type: object
       description: Detailed sandbox info returned by GET /sandboxes/{sandboxID}.
@@ -1396,12 +1285,6 @@ components:
           - 'null'
         clientID:
           type: string
-        containers:
-          type:
-          - array
-          - 'null'
-          items:
-            $ref: '#/components/schemas/SandboxContainer'
         cpuCount:
           type: integer
           format: int32
@@ -1755,59 +1638,6 @@ components:
           type:
           - string
           - 'null'
-    TerminalTicketRequest:
-      type: object
-      properties:
-        cols:
-          type:
-          - integer
-          - 'null'
-          format: int32
-          minimum: 0
-        containerID:
-          type:
-          - string
-          - 'null'
-        cwd:
-          type:
-          - string
-          - 'null'
-        envs:
-          type:
-          - object
-          - 'null'
-          additionalProperties:
-            type: string
-          propertyNames:
-            type: string
-        rows:
-          type:
-          - integer
-          - 'null'
-          format: int32
-          minimum: 0
-        user:
-          description: Terminal execution user. Currently only `root` is supported.
-          type:
-          - string
-          - 'null'
-    TerminalTicketResponse:
-      type: object
-      required:
-      - ticket
-      - expiresAt
-      - websocketUrl
-      properties:
-        containerID:
-          type:
-          - string
-          - 'null'
-        expiresAt:
-          type: string
-        ticket:
-          type: string
-        websocketUrl:
-          type: string
     VersionMatrixView:
       type: object
       description: Full node x component version matrix.

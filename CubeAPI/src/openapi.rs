@@ -13,8 +13,8 @@ use crate::{
     handlers,
     models::{
         ApiError, CreateTemplateRequest, RebuildTemplateRequest, ResumedSandbox, Sandbox,
-        SandboxContainer, SandboxDetail, SandboxLogEntry, SandboxLogsV2Response, SandboxState,
-        SandboxVolumeMount, TemplateAliasLookupResponse, TemplateBuildJob, TemplateBuildStatus,
+        SandboxDetail, SandboxLogEntry, SandboxLogsV2Response, SandboxState, SandboxVolumeMount,
+        TemplateAliasLookupResponse, TemplateBuildJob, TemplateBuildStatus,
         TemplateCompatAdoptResponseView, TemplateCompatMatrixView, TemplateCompatRowView,
         TemplateCompatSummaryView, TemplateDetail, TemplateNodeCompatView, TemplateSummary,
     },
@@ -67,9 +67,7 @@ impl Modify for SecurityAddon {
         handlers::sandboxes::kill_sandbox,
         handlers::sandboxes::pause_sandbox,
         handlers::sandboxes::resume_sandbox,
-        handlers::sandboxes::get_sandbox_logs_v2,
-        handlers::terminal::create_terminal_ticket,
-        handlers::terminal::terminal_websocket
+        handlers::sandboxes::get_sandbox_logs_v2
     ),
     components(schemas(
         ApiError,
@@ -88,13 +86,10 @@ impl Modify for SecurityAddon {
         TemplateCompatAdoptResponseView,
         SandboxState,
         SandboxVolumeMount,
-        SandboxContainer,
         crate::models::ListedSandbox,
         SandboxDetail,
         Sandbox,
         ResumedSandbox,
-        handlers::terminal::TerminalTicketRequest,
-        handlers::terminal::TerminalTicketResponse,
         SandboxLogEntry,
         SandboxLogsV2Response
     )),

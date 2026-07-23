@@ -1,10 +1,10 @@
 # COS Volume Plugin (binary)
 
-**Plugin type:** `binary` (each Hook forks a child process; one line of JSON on stdout)
+**Plugin type:** `binary` (each Hook forks a child process; one line of JSON on stdout)  
 **Driver name:** `cos`
 
-> Shared COS docs (layout, deps, credentials): [`../README.md`](../README.md)
-> rpc example: [`../rpc/`](../rpc/)
+> Shared COS docs (layout, deps, credentials): [`../README.md`](../README.md)  
+> rpc example: [`../rpc/`](../rpc/)  
 > Framework: [docs/guide/volume-plugin.md](../../../../docs/guide/volume-plugin.md)
 
 中文文档：[README.zh.md](README.zh.md)
@@ -22,7 +22,7 @@
 | 5 | Configure CubeMaster + Cubelet — [§3–§5](../README.md#3-configure-cubemaster) |
 | 6 | SDK verification — [§6–§7](../README.md#6-prepare-sdk-environment) |
 
-**Dependencies:** [coscmd](https://cloud.tencent.com/document/product/436/6883) on CubeMaster; [cosfs](https://cloud.tencent.com/document/product/436/10976) on Cubelet. No COS Go SDK (see [rpc](../rpc/)).
+**Dependencies:** [coscmd](https://cloud.tencent.com/document/product/436/6883) on CubeMaster; [cosfs](https://cloud.tencent.com/document/product/436/10976) on Cubelet. No COS Go SDK (see [rpc](../rpc/)). Install: [../README.md §1](../README.md#1-install-dependencies).
 
 ---
 
@@ -104,7 +104,7 @@ SECRET_ID=AKIDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SECRET_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 BUCKET=mybucket-1250000000
 REGION=ap-guangzhou
-# Mount path comes from Cubelet --volume-base-dir (default /data/volume/cos-<id>).
+# Mount path comes from Cubelet --volume-base-dir (default /data/cube-shared/volume/cos-<id>).
 EOF
 sudo chmod 600 "$PREFIX/CubeMaster/plugin/volume-cos.conf"
 # On Cubelet node, edit $PREFIX/Cubelet/plugin/volume-cos.conf similarly
@@ -117,7 +117,7 @@ sudo chmod 600 "$PREFIX/CubeMaster/plugin/volume-cos.conf"
 | `BUCKET` | COS bucket `BucketName-APPID` | `mybucket-1250000000` |
 | `REGION` | Region | `ap-guangzhou` |
 
-Mount path is passed as `--volume-base-dir` (`volume_plugin_base_dir`, default `/data/volume`). `host_path` must be under it, e.g. `/data/volume/cos-<id>`.
+Mount path is passed as `--volume-base-dir` (`volume_plugin_base_dir`, default `/data/cube-shared/volume`). `host_path` must be under it, e.g. `/data/cube-shared/volume/cos-<id>`.
 
 > **Security:** Prefer a sub-account key with bucket read/write only.
 
@@ -256,7 +256,8 @@ do_create() {
 
     load_config                          # Step 1: read SECRET_ID/KEY, BUCKET, REGION
     cos_create_dir "$volume_id"          # Step 2: upload volumes/<id>/.keep via coscmd
-    jq -cn '{ token: "", error: "" }'    # Step 3: return success (COS has no extra token)
+    jq -cn --arg pd "volumes/${volume_id}/" \
+        '{ token: "", private_data: $pd, error: "" }'  # Step 3: private_data → Attach
 }
 ```
 
@@ -349,10 +350,10 @@ ensure_passwd_file() {
   --namespace default \
   --volume-id my-vol \
   --ref-count 0 \
-  --volume-base-dir /data/volume
+  --volume-base-dir /data/cube-shared/volume
 
 CPID=$(pgrep -f "cubelet --config" | head -1)
-nsenter -t $CPID -m -- mountpoint /data/volume/cos-my-vol
+nsenter -t $CPID -m -- mountpoint /data/cube-shared/volume/cos-my-vol
 ```
 
 ### Manual detach
@@ -364,7 +365,7 @@ nsenter -t $CPID -m -- mountpoint /data/volume/cos-my-vol
   --namespace default \
   --volume-id my-vol \
   --ref-count 0 \
-  --metadata '{"mount_dir":"/data/volume/cos-my-vol"}'
+  --metadata '{"mount_dir":"/data/cube-shared/volume/cos-my-vol"}'
 ```
 
 ### Plugin logs

@@ -2,11 +2,10 @@
 // Copyright (C) 2026 Tencent. All rights reserved.
 
 import type { components } from '@/api/generated/schema';
-import type { TemplateCompatMatrix } from '@/api/client';
+import type { SandboxContainer, SandboxDetail, TemplateCompatMatrix } from '@/api/client';
 
 type ClusterOverviewDto = components['schemas']['ClusterOverview'];
 type ListedSandboxDto = components['schemas']['ListedSandbox'];
-type SandboxDetailDto = components['schemas']['SandboxDetail'];
 type SandboxLogsDto = components['schemas']['SandboxLogsV2Response'];
 type SandboxSessionDto = components['schemas']['Sandbox'];
 type TemplateDetailDto = components['schemas']['TemplateDetail'];
@@ -18,7 +17,11 @@ const ago = (secs: number) => new Date(Date.now() - secs * 1000).toISOString();
 const later = (secs: number) => new Date(Date.now() + secs * 1000).toISOString();
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-function buildSandboxes(): ListedSandboxDto[] {
+type MockSandbox = ListedSandboxDto & {
+  containers?: SandboxContainer[];
+};
+
+function buildSandboxes(): MockSandbox[] {
   return [
     {
       templateID: 'python-3.11-ai',
@@ -290,7 +293,7 @@ export function listSandboxes(filters: { state?: string | null; metadata?: strin
   );
 }
 
-export function getSandboxDetail(sandboxID: string): SandboxDetailDto | undefined {
+export function getSandboxDetail(sandboxID: string): SandboxDetail | undefined {
   const sandbox = sandboxes.find((item) => item.sandboxID === sandboxID);
   if (!sandbox) return undefined;
   return {
@@ -446,6 +449,7 @@ export function getTemplate(templateID: string): TemplateDetailDto | undefined {
       },
     ],
     createRequest: buildMockCreateRequest(base),
+    aliases: base.aliases ?? [],
     ...network,
   } as TemplateDetailDto;
 }

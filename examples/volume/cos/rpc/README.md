@@ -1,6 +1,6 @@
 # COS Volume Plugin (rpc)
 
-**Plugin type:** `rpc` (long-running gRPC process; transport via `socket_path`: Unix / TCP)
+**Plugin type:** `rpc` (long-running gRPC process; transport via `socket_path`: Unix / TCP)  
 **Driver name:** `cos-rpc`
 
 | Side | Hooks | This example uses |
@@ -10,11 +10,11 @@
 
 Compared to [binary](../binary/): Controller uses **Go SDK** instead of **coscmd**; Node still uses **cosfs**.
 
-> Shared COS docs: [`../README.md`](../README.md)
+> Shared COS docs: [`../README.md`](../README.md)  
 > Framework: [docs/guide/volume-plugin.md](../../../../docs/guide/volume-plugin.md)
 
-> **Note**
-> This example **demonstrates rpc plugin usage only**; Attach / Detach run locally on the Cubelet node, so production gRPC servers belong on the Node as well.
+> **Note**  
+> This example **demonstrates rpc plugin usage only**; Attach / Detach run locally on the Cubelet node, so production gRPC servers belong on the Node as well.  
 > **Steps below assume a single-host setup** (CubeMaster and Cubelet on one machine); split roles across hosts as needed.
 
 中文文档：[README.zh.md](README.zh.md)
@@ -37,10 +37,10 @@ Compared to [binary](../binary/): Controller uses **Go SDK** instead of **coscmd
 
 ## 1. cosfs (Cubelet node)
 
-Attach/Detach use cosfs. **Cubelet node only** — see [../README.md §1](../README.md#1-install-dependencies).
+Attach/Detach use cosfs. Install and verify: [../README.md §1](../README.md#1-install-dependencies).
 
 ```bash
-sudo ../install-deps.sh --cosfs
+sudo /usr/local/services/cubetoolbox/Cubelet/plugin/install-deps.sh --cosfs
 ls /dev/fuse && which cosfs && cosfs --version
 ```
 

@@ -10,20 +10,26 @@ import (
 	"testing"
 )
 
-func TestTerminalWebSocketRequiresInternalRelayHeader(t *testing.T) {
+func TestTerminalWebSocketRequiresGatewayToken(t *testing.T) {
+	t.Setenv(terminalGatewayTokenEnv, "shared-terminal-secret")
 	request := httptest.NewRequest(http.MethodGet, "http://master/cube/sandbox/terminal", nil)
 	if terminalUpgrader.CheckOrigin(request) {
-		t.Fatal("connection without internal relay header should be rejected")
+		t.Fatal("connection without gateway token should be rejected")
 	}
 
-	request.Header.Set(terminalRelayHeader, terminalRelayHeaderValue)
+	request.Header.Set(terminalGatewayTokenHeader, "wrong-secret")
+	if terminalUpgrader.CheckOrigin(request) {
+		t.Fatal("connection with wrong gateway token should be rejected")
+	}
+
+	request.Header.Set(terminalGatewayTokenHeader, "shared-terminal-secret")
 	if !terminalUpgrader.CheckOrigin(request) {
-		t.Fatal("internal CubeAPI relay should be accepted")
+		t.Fatal("internal CubeOps gateway should be accepted")
 	}
 
 	request.Header.Set("Origin", "https://dashboard.example.com")
 	if terminalUpgrader.CheckOrigin(request) {
-		t.Fatal("browser-originated connection should be rejected even with relay header")
+		t.Fatal("browser-originated connection should be rejected even with gateway token")
 	}
 }
 

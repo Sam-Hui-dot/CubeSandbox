@@ -16,7 +16,7 @@ The Dashboard is a static frontend served by an nginx container on the **control
 | --- | --- | --- |
 | One-click / multi-node deploy | `http://<control-node-ip>:12088` | Default port, change via `WEB_UI_HOST_PORT` |
 | Bare-metal deploy | `http://<server-ip>:12088` | Same port |
-| Local development | `http://localhost:5173` | Vite dev server, proxies `/cubeapi` to `127.0.0.1:3000` |
+| Local development | `http://localhost:5173` | Vite dev server, proxies Dashboard API traffic to CubeOps on `127.0.0.1:3010` |
 
 ::: tip Port 12088 vs CubeOps :3010
 Port `12088` is the human-facing Dashboard (nginx). Behind it, **CubeOps** (the ops/admin service) listens on `:3010`. The Dashboard talks to CubeOps under two same-origin prefixes:
@@ -75,11 +75,11 @@ To stop a sandbox, go to **Sandboxes**, find the row, and click the pause / kill
 
 On the **Sandboxes** list, or on a running sandbox detail page, click
 **Terminal** to open an in-browser shell. Non-running sandboxes keep the action
-disabled because CubeAPI only opens terminals for instances that are currently
+disabled because CubeOps only opens terminals for instances that are currently
 `running`.
 
-The Dashboard asks CubeAPI for a short-lived, one-time terminal ticket, then
-upgrades to a WebSocket. CubeAPI relays the authenticated session through
+The Dashboard asks CubeOps for a short-lived, one-time terminal ticket, then
+upgrades to a same-origin WebSocket. CubeOps relays the authenticated session through
 CubeMaster and Cubelet to a containerd exec process in the selected container.
 
 The terminal supports:
@@ -97,35 +97,27 @@ when the ticket is created.
 
 ::: tip Terminal access is ticket-based
 Browsers cannot attach arbitrary `Authorization` headers to a WebSocket upgrade.
-CubeAPI therefore authenticates the normal `POST /sandboxes/:id/terminal/tickets`
+CubeOps therefore authenticates the normal `POST /sandboxes/:id/terminal/tickets`
 request first, issues a one-time ticket with a short TTL, and validates that
 ticket during the WebSocket upgrade.
 :::
 
-CubeAPI must be able to reach CubeMaster's internal HTTP address configured by
-`CUBE_MASTER_ADDR`. The CubeMaster terminal endpoint accepts only the internal
-CubeAPI relay handshake and rejects browser-originated WebSocket connections.
-
-The default idle timeout is 30 minutes. Override it with either of these
-variables:
-
-```bash
-export CUBE_API_TERMINAL_IDLE_TIMEOUT_SECS=1800
-# Compatibility alias:
-export TERMINAL_IDLE_TIMEOUT_SECS=1800
-```
+CubeOps must be able to reach CubeMaster's internal HTTP address configured by
+`CUBE_MASTER_ADDR`. Both services must receive the same
+`CUBE_TERMINAL_GATEWAY_TOKEN`; the one-click installer and Helm chart generate
+and preserve this secret automatically. CubeMaster rejects browser-originated
+connections and internal connections without the shared token.
 
 Terminal audit events are emitted as structured logs:
 
 | Event | Important fields |
 | --- | --- |
-| `terminal.ticket.issued` | `sandbox_id`, `container_id`, requested `rows`, requested `cols` |
-| `terminal.open_failed` | `sandbox_id`, `container_id`, `created_by`, `stage`, `error` |
-| `terminal.opened` | `sandbox_id`, `container_id`, `session_id`, `created_by`, `exec_id` |
-| `terminal.closed` | `sandbox_id`, `container_id`, `session_id`, `close_reason`, `duration_ms`, `process_ended` |
+| `terminal ticket issued` | `sandbox_id`, `container_id`, `username` |
+| `terminal session opened` | `sandbox_id`, `container_id`, `session_id`, `username` |
+| `terminal session closed` | `sandbox_id`, `container_id`, `session_id`, `username`, `reason` |
 
 ::: tip Container targeting
-When CubeAPI receives container metadata from CubeMaster, the Dashboard shows a
+When CubeOps receives container metadata from CubeMaster, the Dashboard shows a
 container selector and binds the selected `containerID` to the one-time ticket.
 Cubelet verifies that the container belongs to the sandbox before creating the
 PTY process in that exact container.

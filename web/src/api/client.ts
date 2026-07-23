@@ -19,9 +19,18 @@ export type ComponentVersionDto = components['schemas']['ComponentVersionView'];
 
 export interface RunningSandbox extends ListedSandboxDto {}
 
-export type SandboxContainer = NonNullable<NonNullable<SandboxDetailDto['containers']>[number]>;
+export interface SandboxContainer {
+  containerID: string;
+  name?: string | null;
+  state: RunningSandbox['state'];
+  image?: string | null;
+  kind?: string | null;
+  startedAt?: string | null;
+}
 
-export interface SandboxDetail extends SandboxDetailDto {}
+export interface SandboxDetail extends SandboxDetailDto {
+  containers?: SandboxContainer[] | null;
+}
 
 export interface TerminalTicketRequest {
   containerID?: string;
@@ -57,6 +66,8 @@ export interface TemplateDetail extends TemplateSummary {
   createRequest?: unknown;
   networkType?: string | null;
   allowInternetAccess?: boolean | null;
+  /** Maps from dto.aliases[0] — CubeMaster returns the template alias as `aliases: string[]`. */
+  displayName?: string | null;
 }
 
 export interface TemplateCompatSummary {
@@ -133,7 +144,7 @@ function mapSandbox(dto: ListedSandboxDto): RunningSandbox {
 }
 
 function mapSandboxDetail(dto: SandboxDetailDto): SandboxDetail {
-  return dto;
+  return dto as SandboxDetail;
 }
 
 function mapTemplateSummary(dto: TemplateSummaryDto): TemplateSummary {
@@ -167,6 +178,10 @@ function mapTemplateDetail(dto: TemplateDetailDto): TemplateDetail {
     networkType: (dto as unknown as { networkType?: string }).networkType ?? null,
     allowInternetAccess:
       (dto as unknown as { allowInternetAccess?: boolean }).allowInternetAccess ?? null,
+    displayName:
+      dto.aliases?.[0]?.trim() ||
+      (dto as unknown as { displayName?: string }).displayName?.trim() ||
+      null,
   };
 }
 
@@ -278,7 +293,11 @@ export const templateApi = {
     api<{ lines?: string[]; status?: string; progress?: number }>(
       `/templates/${id}/builds/${buildID}/logs`,
     ),
-  remove: (id: string) => api<void>(`/templates/${id}`, { method: 'DELETE' }),
+  remove: (id: string) =>
+    api<void>(`/templates/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      params: { sync: true },
+    }),
   compat: () => api<TemplateCompatMatrix>('/templates/compat'),
   adoptCompatBaseline: (id: string) =>
     api<{ updated: number }>(`/templates/compat/${id}/adopt-baseline`, { method: 'POST' }),

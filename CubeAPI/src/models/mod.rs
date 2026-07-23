@@ -56,6 +56,8 @@ pub struct SandboxNetworkConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub deny_out: Option<Vec<String>>,
+    /// Host authority forwarded to user services by CubeProxy. `${PORT}` is
+    /// expanded to the requested sandbox port; envd traffic is exempt.
     #[serde(rename = "maskRequestHost", skip_serializing_if = "Option::is_none")]
     pub mask_request_host: Option<String>,
     /// L7 egress rules, evaluated first-match-wins in list order.
@@ -154,22 +156,6 @@ impl Default for SandboxOnTimeout {
 pub struct SandboxVolumeMount {
     pub name: String,
     pub path: String,
-}
-
-/// Runtime container visible inside a sandbox.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct SandboxContainer {
-    #[serde(rename = "containerID")]
-    pub container_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub state: SandboxState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<DateTime<Utc>>,
 }
 
 // ─── Sandbox — create request ──────────────────────────────────────────────
@@ -294,8 +280,6 @@ pub struct ListedSandbox {
     pub envd_version: String,
     #[serde(rename = "volumeMounts", skip_serializing_if = "Option::is_none")]
     pub volume_mounts: Option<Vec<SandboxVolumeMount>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub containers: Option<Vec<SandboxContainer>>,
 }
 
 /// Detailed sandbox info returned by GET /sandboxes/{sandboxID}.
@@ -332,8 +316,6 @@ pub struct SandboxDetail {
     pub state: SandboxState,
     #[serde(rename = "volumeMounts", skip_serializing_if = "Option::is_none")]
     pub volume_mounts: Option<Vec<SandboxVolumeMount>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub containers: Option<Vec<SandboxContainer>>,
 }
 
 // ─── Sandbox — pause/resume/connect/snapshot ──────────────────────────────
@@ -593,7 +575,8 @@ mod tests {
     fn sandbox_network_config_accepts_snake_case_policy_fields() {
         let cfg: SandboxNetworkConfig = serde_json::from_value(serde_json::json!({
             "allow_out": ["api.example.com", "8.8.8.8"],
-            "deny_out": ["0.0.0.0/0"]
+            "deny_out": ["0.0.0.0/0"],
+            "maskRequestHost": "localhost:${PORT}"
         }))
         .expect("network config should deserialize");
 
@@ -602,6 +585,7 @@ mod tests {
             Some(vec!["api.example.com".to_string(), "8.8.8.8".to_string()])
         );
         assert_eq!(cfg.deny_out, Some(vec!["0.0.0.0/0".to_string()]));
+        assert_eq!(cfg.mask_request_host.as_deref(), Some("localhost:${PORT}"));
     }
 
     #[test]

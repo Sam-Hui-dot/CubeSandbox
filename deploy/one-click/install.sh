@@ -1068,7 +1068,9 @@ mkdir -p \
   /data/log/CubeVmm \
   /data/cube-shim/disks \
   /data/snapshot_pack/disks \
-  /data/volume
+  /data/cube-shared \
+  /data/cube-shared/volume \
+  /data/shared
 
 if [[ "${DEPLOY_ROLE}" != "compute" ]]; then
   mkdir -p \
@@ -1093,6 +1095,18 @@ fi
 # mktemp+mv, which replaces the inode; it sets 0600 on its temp file so this
 # mode is preserved across every later upsert rather than reverting to 0644.
 chmod 600 "${RUNTIME_ENV_FILE}"
+
+# CubeOps and CubeMaster share this server-to-server terminal credential. Keep
+# an existing value across upgrades; otherwise generate it once at install.
+terminal_gateway_token="$(read_env_key "${RUNTIME_ENV_FILE}" CUBE_TERMINAL_GATEWAY_TOKEN)"
+if [[ -z "${terminal_gateway_token}" ]]; then
+  if command -v openssl >/dev/null 2>&1; then
+    terminal_gateway_token="$(openssl rand -hex 32)"
+  else
+    terminal_gateway_token="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  fi
+fi
+upsert_env_kv "${RUNTIME_ENV_FILE}" "CUBE_TERMINAL_GATEWAY_TOKEN" "${terminal_gateway_token}"
 
 # Install version files so the installed system can report its version.
 if [[ -f "${SCRIPT_DIR}/VERSION.txt" ]]; then

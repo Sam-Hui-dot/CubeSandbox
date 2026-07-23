@@ -2,7 +2,7 @@
 
 本文面向**第一次使用 Volume 插件**的用户：按顺序完成下面步骤，即可用 COS 做持久化存储（创建 Volume → 挂载到沙箱 → 读写 → 解绑 → 删除）。
 
-> **版本要求**：Cube 平台 **≥ 0.6.0**、Python SDK **`cubesandbox` ≥ 0.6.0**。
+> **版本要求**：Cube 平台 **≥ 0.6.0**、Python SDK **`cubesandbox` ≥ 0.6.0**。  
 > 协议与 Hook 细节见 [Volume 插件框架](../../docs/zh/guide/volume-plugin.md)。
 
 **默认走 binary 插件**（`driver=cos`，Shell + coscmd + cosfs，最容易跑通）。若要用 Go rpc 插件（`driver=cos-rpc`），见文末 [rpc 路径](#rpc-路径可选)。
@@ -26,8 +26,10 @@
 | 腾讯云 COS | 已创建 [Bucket](https://cloud.tencent.com/document/product/436/13309)，子账号 [API 密钥](https://cloud.tencent.com/document/product/436/7751) 对该 bucket 有读写权限 |
 | 本机权限 | 能 `sudo` 在 CubeMaster / Cubelet 所在机器上安装软件、改配置、重启服务 |
 
-**单机开发**：CubeMaster 与 Cubelet 在同一台机器上时，依赖装在一台即可。
+**单机开发**：CubeMaster 与 Cubelet 在同一台机器上时，依赖装在一台即可。  
 **多机部署**：各工具装在哪台见 [§1 安装依赖](#1-安装依赖) 表格。
+
+> **架构限制**：不支持 ARM / aarch64（官方 cosfs 仅提供 x86_64 / amd64 包）。
 
 ---
 
@@ -44,39 +46,35 @@
 
 > **rpc 插件**：Cubelet 节点仍须 cosfs；**不需要** coscmd / jq。Controller 逻辑在 `cube-volume-cos-rpc` 进程内，用 Go SDK 访问 COS。
 
-### 方式 A：一键脚本（推荐）
+### 容器部署（Kubernetes / 镜像）
 
-脚本路径：`examples/volume/cos/install-deps.sh`。支持 CentOS / TencentOS / Ubuntu 等；安装结束会自动做基础 check。
+容器镜像中已包含 **cosfs、coscmd、jq**，无需再执行下方脚本。
 
-**Cubelet 节点**（跑 Cubelet、执行 attach 的机器）：
+### 方式 A：一键脚本（推荐，裸机 / one-click）
 
-```bash
-cd /path/to/CubeSandbox
-sudo ./examples/volume/cos/install-deps.sh --cosfs
-```
-
-**CubeMaster 节点**（跑 CubeMaster、binary 插件 create/destroy 的机器）：
+**Cubelet 节点：**
 
 ```bash
-sudo ./examples/volume/cos/install-deps.sh --coscmd --jq
+sudo /usr/local/services/cubetoolbox/Cubelet/plugin/install-deps.sh --cosfs
 ```
 
-**单机 binary 全套**（CubeMaster + Cubelet 同机）：
+**CubeMaster 节点：**
 
 ```bash
-sudo ./examples/volume/cos/install-deps.sh --all
+sudo /usr/local/services/cubetoolbox/CubeMaster/plugin/install-deps.sh --coscmd --jq
 ```
 
-仅验证、不安装：
+**单机全套**（CubeMaster 与 Cubelet 同机）：
 
 ```bash
-./examples/volume/cos/install-deps.sh --cosfs --check-only    # 在 Cubelet 节点执行
-./examples/volume/cos/install-deps.sh --coscmd --jq --check-only  # 在 CubeMaster 节点执行
+sudo /usr/local/services/cubetoolbox/Cubelet/plugin/install-deps.sh --all
 ```
+
+仅检查、不安装：加 `--check-only`。
 
 ### 方式 B：脚本失败时 — 按腾讯云官方文档手动安装
 
-一键脚本无法覆盖所有发行版/架构（如 ARM、特殊镜像）。**请以腾讯云文档为准**自行安装对应包，再用下方命令确认成功。
+**请以腾讯云文档为准**自行安装，再用下方命令确认成功。
 
 | 工具 | 腾讯云官方安装文档 |
 |------|-------------------|
@@ -101,13 +99,6 @@ which cosfs && cosfs --version
 
 ```bash
 which coscmd && coscmd --version
-```
-
-可选：用 `volume-cos.conf` 里的 bucket 测读写权限（需已配置密钥）：
-
-```bash
-source /usr/local/services/cubetoolbox/CubeMaster/plugin/volume-cos.conf
-coscmd -b "$BUCKET" -r "$REGION" list /
 ```
 
 **CubeMaster 节点 — jq**（binary）
@@ -161,7 +152,7 @@ sudo install -m 0600 examples/volume/cos/volume-cos.conf.example \
 | `BUCKET` | `BucketName-APPID` | `mybucket-1250000000` |
 | `REGION` | 地域 | `ap-guangzhou` |
 
-挂载基目录**不在此文件配置**——由 Cubelet 在 attach 时传入（默认 `/data/volume`，见 [§4](#4-配置-cubelet)）。
+挂载基目录**不在此文件配置**——由 Cubelet 在 attach 时传入（默认 `/data/cube-shared/volume`，见 [§4](#4-配置-cubelet)）。
 
 ---
 
@@ -189,11 +180,11 @@ volume_plugins:
 
 编辑 Cubelet 配置（常见路径：`/usr/local/services/cubetoolbox/Cubelet/config/config.toml`）。
 
-在 `[plugins."io.cubelet.internal.v1.storage"]` 段中确认挂载父目录（可选，默认已是 `/data/volume`）：
+在 `[plugins."io.cubelet.internal.v1.storage"]` 段中确认挂载父目录（可选，默认已是 `/data/cube-shared/volume`）：
 
 ```toml
 [plugins."io.cubelet.internal.v1.storage"]
-  volume_plugin_base_dir = "/data/volume"
+  volume_plugin_base_dir = "/data/cube-shared/volume"
 ```
 
 在同一段下增加 **Node** 侧插件（Attach / Detach）：
@@ -205,8 +196,8 @@ volume_plugins:
   binary_path = "/usr/local/services/cubetoolbox/Cubelet/plugin/cube-volume-cos"
 ```
 
-**两侧 `name` 必须与 CubeMaster 一致**（此处均为 `cos`）。
-插件返回的 `host_path` 必须是 `volume_plugin_base_dir` 下的子路径（示例脚本挂载为 `/data/volume/cos-<volumeID>`）。
+**两侧 `name` 必须与 CubeMaster 一致**（此处均为 `cos`）。  
+插件返回的 `host_path` 必须是 `volume_plugin_base_dir` 下的子路径（示例脚本挂载为 `/data/cube-shared/volume/cos-<volumeID>`）。
 
 ---
 
@@ -245,8 +236,8 @@ grep -aF '[plugin_volume] initialized' /data/log/Cubelet/Cubelet-req.log | tail 
   --namespace default \
   --volume-id test-vol \
   --ref-count 0 \
-  --volume-base-dir /data/volume
-# 成功时 stdout 一行 JSON，含 "host_path":"/data/volume/cos-test-vol", "error":""
+  --volume-base-dir /data/cube-shared/volume
+# 成功时 stdout 一行 JSON，含 "host_path":"/data/cube-shared/volume/cos-test-vol", "error":""
 ```
 
 ---
@@ -372,7 +363,7 @@ python3 verify_volume.py
 <bucket>/volumes/<volumeID>/   ← 每个 Volume 一个目录
 ```
 
-Attach 时 cosfs 挂到宿主机 `/data/volume/cos-<volumeID>/`，再经 virtiofs 进沙箱。
+Attach 时 cosfs 挂到宿主机 `/data/cube-shared/volume/cos-<volumeID>/`，再经 virtiofs 进沙箱。
 
 ### Hook 行为（RefCount）
 

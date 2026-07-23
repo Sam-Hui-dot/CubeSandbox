@@ -359,6 +359,25 @@ func TransformSandboxDetail(raw json.RawMessage) interface{} {
 		"hostID":      item.HostID,
 		"domain":      SandboxDomain(),
 	}
+	containers := make([]map[string]interface{}, 0, len(item.Containers))
+	for _, container := range item.Containers {
+		state := "paused"
+		switch container.Status {
+		case 1:
+			state = "running"
+		case 4:
+			state = "pausing"
+		}
+		containers = append(containers, map[string]interface{}{
+			"containerID": container.ContainerID,
+			"name":        container.ContainerID,
+			"state":       state,
+			"image":       container.Image,
+			"kind":        container.Type,
+			"startedAt":   NanosToISO(container.CreateAt),
+		})
+	}
+	result["containers"] = containers
 	if item.Labels != nil {
 		result["metadata"] = item.Labels
 	}

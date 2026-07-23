@@ -1,6 +1,6 @@
 # COS Volume 插件（rpc）
 
-**插件类型**：`rpc`（长驻 gRPC 进程；传输层 `socket_path`：Unix / TCP）
+**插件类型**：`rpc`（长驻 gRPC 进程；传输层 `socket_path`：Unix / TCP）  
 **driver 名**：`cos-rpc`
 
 | 侧 | Hook | 本示例依赖 |
@@ -10,11 +10,11 @@
 
 与 [binary](../binary/) 对比：Controller 用 **Go SDK** 替代 **coscmd**；Node 仍用 **cosfs**。
 
-> 共用说明（COS 布局、cosfs 安装、凭证）：[`../README.zh.md`](../README.zh.md)
+> 共用说明（COS 布局、cosfs 安装、凭证）：[`../README.zh.md`](../README.zh.md)  
 > 框架原理：[docs/zh/guide/volume-plugin.md](../../../../docs/zh/guide/volume-plugin.md)
 
-> **说明**
-> 本示例**仅演示 rpc 插件用法**；Attach / Detach 须在 Cubelet 节点本地执行，生产环境 gRPC server 也应部署在 Node 上。
+> **说明**  
+> 本示例**仅演示 rpc 插件用法**；Attach / Detach 须在 Cubelet 节点本地执行，生产环境 gRPC server 也应部署在 Node 上。  
 > **下文以单机部署为例**（CubeMaster 与 Cubelet 同机）；多节点时请按实际角色分别部署。
 
 ---
@@ -35,12 +35,10 @@
 
 ## 1. cosfs（Cubelet 节点）
 
-Attach/Detach 通过 cosfs 挂载。**仅在 Cubelet 节点**安装，步骤与校验见 [../README.zh.md §1](../README.zh.md#1-安装依赖)。
-
-快速命令：
+Attach/Detach 通过 cosfs 挂载。安装与校验见 [../README.zh.md §1](../README.zh.md#1-安装依赖)。
 
 ```bash
-sudo ../install-deps.sh --cosfs          # 或按官方文档手动安装
+sudo /usr/local/services/cubetoolbox/Cubelet/plugin/install-deps.sh --cosfs
 ls /dev/fuse && which cosfs && cosfs --version
 ```
 

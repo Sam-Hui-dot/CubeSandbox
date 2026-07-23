@@ -16,10 +16,10 @@ Dashboard 是一个静态前端，由 **控制节点** 上的 nginx 容器托管
 | --- | --- | --- |
 | 一键部署 / 多机集群 | `http://<控制节点IP>:12088` | 默认端口，可通过 `WEB_UI_HOST_PORT` 修改 |
 | 裸金属 / 物理机部署 | `http://<服务器IP>:12088` | 同样使用 12088 |
-| 本地开发 | `http://localhost:5173` | Vite 开发服务器，自动代理 `/cubeapi` 到 `127.0.0.1:3000` |
+| 本地开发 | `http://localhost:5173` | Vite 开发服务器，自动把 Dashboard API 请求代理到 `127.0.0.1:3010` 的 CubeOps |
 
-::: tip 记住 12088，不是 3000
-`3000` 端口是 E2B 兼容的 REST API（CubeAPI），`12088` 是给人用的 Dashboard。Dashboard 在内部会通过同源前缀 `/cubeapi/v1` 调用 CubeAPI，所以你只需要打开 `12088` 这一个端口。
+::: tip 记住 12088，不是 3010
+`3010` 端口是 CubeOps 的内部服务端口，`12088` 是给人用的 Dashboard。Dashboard 在内部会通过同源前缀 `/opsapi` 和 `/cubeapi/v1` 调用 CubeOps，所以你只需要打开 `12088` 这一个端口。
 :::
 
 如果你不知道控制节点的 IP，可以在服务器上跑 `ip -4 addr`，或者在同网段下直接访问 `http://<主机名>:12088`。
@@ -71,23 +71,17 @@ Dashboard 是一个静态前端，由 **控制节点** 上的 nginx 容器托管
 
 在 **Sandboxes** 列表或运行中沙箱的详情页点击 **Terminal**，即可打开浏览器内 Shell。沙箱包含多个运行中容器时，需要先选择目标容器。
 
-Dashboard 会先向 CubeAPI 申请一个短时、一次性的终端票据，再建立 WebSocket。经过鉴权的会话由 CubeAPI 转发至 CubeMaster 和 Cubelet，最终在所选容器中创建 containerd exec PTY。Cubelet 会再次校验容器确实属于该沙箱。
+Dashboard 会先向 CubeOps 申请一个短时、一次性的终端票据，再建立同源 WebSocket。经过鉴权的会话由 CubeOps 转发至 CubeMaster 和 Cubelet，最终在所选容器中创建 containerd exec PTY。Cubelet 会再次校验容器确实属于该沙箱。
 
 终端支持 ANSI 输出、复制粘贴、滚动历史、窗口尺寸同步、重连、空闲超时和断连后的进程清理。窗口尺寸会经过 CubeShim 传递到 guest PTY，而不是只停留在 Web 层。
 
 终端当前以 `root` 用户启动；票据申请中的其他执行用户会被拒绝。
 
-浏览器不能在 WebSocket 升级时自由附加 `Authorization` 请求头，因此票据申请接口负责正常鉴权，WebSocket 只接受尚未使用且未过期的票据。CubeMaster 的内部终端端点还会拒绝浏览器来源的直连请求。
+浏览器不能在 WebSocket 升级时自由附加 `Authorization` 请求头，因此 CubeOps 的票据申请接口负责 JWT 鉴权，WebSocket 只接受尚未使用且未过期的票据。CubeMaster 的内部终端端点还会拒绝浏览器来源的直连请求。
 
-CubeAPI 需要能够访问 `CUBE_MASTER_ADDR` 配置的 CubeMaster 内部 HTTP 地址。默认空闲超时为 30 分钟，可通过下面任一变量调整：
+CubeOps 需要能够访问 `CUBE_MASTER_ADDR` 配置的 CubeMaster 内部 HTTP 地址。CubeOps 与 CubeMaster 必须配置相同的 `CUBE_TERMINAL_GATEWAY_TOKEN`；一键安装脚本和 Helm Chart 会自动生成并在升级时保留这个密钥。CubeMaster 会拒绝浏览器直连以及没有该共享密钥的内部连接。
 
-```bash
-export CUBE_API_TERMINAL_IDLE_TIMEOUT_SECS=1800
-# 兼容别名：
-export TERMINAL_IDLE_TIMEOUT_SECS=1800
-```
-
-终端审计日志会记录 `sandbox_id`、`container_id`、`session_id`、`exec_id`、操作者、关闭原因和会话时长。
+终端审计日志会记录 `sandbox_id`、`container_id`、`session_id`、操作者和关闭原因。
 
 ### 3.4 配置 API Key（仅在开启鉴权时需要）
 

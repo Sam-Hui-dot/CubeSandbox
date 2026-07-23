@@ -6,5 +6,4 @@ pub mod health;
 pub mod sandboxes;
 pub mod snapshots;
 pub mod templates;
-pub mod terminal;
 pub mod volumes;
