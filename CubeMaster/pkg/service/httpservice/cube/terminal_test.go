@@ -33,7 +33,7 @@ func TestTerminalWebSocketRequiresGatewayToken(t *testing.T) {
 	}
 }
 
-func TestValidateTerminalOpenControl(t *testing.T) {
+func TestNormalizeAndValidateTerminalOpenControl(t *testing.T) {
 	valid := &terminalOpenControl{
 		Type:        "open",
 		SandboxID:   " sandbox ",
@@ -41,7 +41,7 @@ func TestValidateTerminalOpenControl(t *testing.T) {
 		Cols:        80,
 		Rows:        24,
 	}
-	if err := validateTerminalOpenControl(valid); err != nil {
+	if err := normalizeAndValidateTerminalOpenControl(valid); err != nil {
 		t.Fatalf("valid terminal open rejected: %v", err)
 	}
 	if valid.SandboxID != "sandbox" || valid.ContainerID != "container" {
@@ -59,7 +59,7 @@ func TestValidateTerminalOpenControl(t *testing.T) {
 		"invalid env":       {Type: "open", SandboxID: "sandbox", ContainerID: "container", Cols: 80, Rows: 24, Env: []string{"INVALID"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateTerminalOpenControl(open); err == nil {
+			if err := normalizeAndValidateTerminalOpenControl(open); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})

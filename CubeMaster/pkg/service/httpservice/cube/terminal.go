@@ -91,10 +91,6 @@ func handleTerminalAction(w http.ResponseWriter, r *http.Request, rt *CubeLog.Re
 		http.Error(w, "terminal requires a WebSocket upgrade", http.StatusBadRequest)
 		return
 	}
-	if !terminalUpgrader.CheckOrigin(r) {
-		http.Error(w, "terminal relay connection is not allowed", http.StatusForbidden)
-		return
-	}
 
 	conn, err := terminalUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -165,13 +161,13 @@ func readTerminalOpen(conn *websocket.Conn) (*terminalOpenControl, error) {
 	if err := json.Unmarshal(payload, &open); err != nil {
 		return nil, fmt.Errorf("invalid terminal open message: %w", err)
 	}
-	if err := validateTerminalOpenControl(&open); err != nil {
+	if err := normalizeAndValidateTerminalOpenControl(&open); err != nil {
 		return nil, err
 	}
 	return &open, nil
 }
 
-func validateTerminalOpenControl(open *terminalOpenControl) error {
+func normalizeAndValidateTerminalOpenControl(open *terminalOpenControl) error {
 	if open == nil {
 		return errors.New("terminal open message is required")
 	}
